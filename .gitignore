@@ -1,0 +1,12 @@
+data/
+tmp/
+results/
+sandbox/
+.vscode/
+.env
+
+.DS_Store
+*.log
+*.tmp
+*.bak
+*.swp

@@ -1,0 +1,9 @@
+FastAPI
+uvicorn
+numpy
+matplotlib
+pandas
+scikit-learn
+jinja2
+python-dotenv
+tqdm

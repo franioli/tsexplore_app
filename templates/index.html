@@ -1,0 +1,335 @@
+{# Jinja2 Template #}
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>PPCX TS APP</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    .panel {
+      padding: 12px;
+      background: #f8f9fa;
+      border-bottom: 2px solid #dee2e6;
+    }
+
+    .panel-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: #495057;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .control-label {
+      font-size: 12px;
+      color: #6c757d;
+      font-weight: 500;
+    }
+
+    input,
+    select,
+    button {
+      padding: 6px 10px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+
+    button {
+      background: #007bff;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #0056b3;
+    }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid #ced4da;
+    }
+
+    .checkbox-group label {
+      font-size: 13px;
+      color: #495057;
+      cursor: pointer;
+      margin: 0;
+    }
+
+    #upper,
+    #lower {
+      width: 100%;
+      height: 45vh;
+    }
+
+    .section-divider {
+      height: 8px;
+      background: linear-gradient(to bottom, #dee2e6, #f8f9fa);
+    }
+
+    /* Style disabled dates differently */
+    .flatpickr-day.flatpickr-disabled {
+      color: #ccc !important;
+      cursor: not-allowed;
+    }
+
+    /* Keep enabled dates bold (optional) */
+    .flatpickr-day:not(.flatpickr-disabled) {
+      font-weight: 600;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Data Loading -->
+  <div class="panel">
+    <div class="panel-title">DIC Data Loading</div>
+    <div class="controls-grid">
+      <div class="control-group">
+        <label class="control-label">Select Date</label>
+        <div style="display: flex; gap: 4px; align-items: center;">
+          <button id="prev-date" style="padding: 6px 12px; flex-shrink: 0;" title="Previous date">◀</button>
+          <input type="text" id="date-picker" placeholder="Select date..." style="flex: 1;" />
+          <button id="next-date" style="padding: 6px 12px; flex-shrink: 0;" title="Next date">▶</button>
+        </div>
+        <input type="hidden" id="date-raw" value="{{ dates_raw[0] if dates_raw else '' }}" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Use Velocity</label>
+        <div class="checkbox-group">
+          <input type="checkbox" id="use-velocity" checked>
+          <label for="use-velocity">px/day (instead of px)</label>
+        </div>
+      </div>
+      <div class="control-group">
+        <label class="control-label">Search Radius (px)</label>
+        <input type="number" id="radius" value="10" step="1" />
+      </div>
+      <!-- <div class="control-group" style="justify-content: flex-end;">
+        <button id="load-data" style="margin-top: auto;">Load Data</button>
+      </div> -->
+    </div>
+  </div>
+
+  <!-- Velocity Map Controls -->
+  <div class="panel">
+    <div class="panel-title">Velocity Field</div>
+    <div class="controls-grid">
+      <div class="control-group">
+        <label class="control-label">Plot Type</label>
+        <select id="plot-type">
+          <option value="scatter" selected>Scatter</option>
+          <option value="raster">Heatmap</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label class="control-label">Colorscale</label>
+        <select id="colorscale">
+          <option>Reds</option>
+          <option>Viridis</option>
+          <option>Plasma</option>
+          <option>Blues</option>
+          <option>RdYlBu</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label class="control-label">V Min</label>
+        <input type="number" id="cmin" step="0.1" placeholder="Auto" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">V Max</label>
+        <input type="number" id="cmax" step="0.1" placeholder="Auto" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Marker Size</label>
+        <input type="number" id="marker-size" value="6" min="2" max="20" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Marker Opacity</label>
+        <input type="number" id="marker-opacity" value="0.7" min="0.1" max="1" step="0.1" />
+      </div>
+      <!-- <div class="control-group" style="justify-content: flex-end;">
+        <button id="refresh-plot" style="margin-top: auto;">Refresh Plot</button>
+      </div> -->
+    </div>
+  </div>
+
+  <div class="section-divider"></div>
+  <div id="upper"></div>
+  <div class="section-divider"></div>
+
+  <!-- Time Series Controls -->
+  <div class="panel">
+    <div class="panel-title">Time Series</div>
+    <div class="controls-grid">
+      <div class="control-group">
+        <label class="control-label">Components</label>
+        <select id="components" multiple size="1">
+          <option value="u">u (East)</option>
+          <option value="v">v (North)</option>
+          <option value="V" selected>|v| (Magnitude)</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label class="control-label">Marker Mode</label>
+        <select id="marker-mode">
+          <option value="lines+markers" selected>Lines + Markers</option>
+          <option value="lines">Lines Only</option>
+          <option value="markers">Markers Only</option>
+        </select>
+      </div>
+      <div class="control-group">
+        <label class="control-label">Date Min</label>
+        <input type="text" id="xmin-date-picker" placeholder="All" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Date Max</label>
+        <input type="text" id="xmax-date-picker" placeholder="All" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Y Min</label>
+        <input type="number" id="ymin" step="0.1" placeholder="Auto" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Y Max</label>
+        <input type="number" id="ymax" step="0.1" placeholder="Auto" />
+      </div>
+    </div>
+  </div>
+
+  <div id="lower"></div>
+  <script>
+    const datesIso = {{ dates_iso | tojson | safe }};
+    const datesRaw = {{ dates_raw | tojson | safe }};
+    const datesDisplay = {{ dates_display | tojson | safe }};
+
+    let mainPicker = null;
+
+    if (datesIso.length > 0) {
+      // Get first and last display dates
+      const firstDisplay = datesDisplay[0];
+      const lastDisplay = datesDisplay[datesDisplay.length - 1];
+
+      // Main date picker for data loading
+      mainPicker = flatpickr("#date-picker", {
+        enable: datesIso,
+        dateFormat: "d/m/Y",
+        defaultDate: firstDisplay,
+        disableMobile: true,
+        onChange: function (selectedDates, dateStr) {
+          const idx = datesDisplay.indexOf(dateStr);
+          if (idx >= 0) {
+            const newDate = datesRaw[idx];
+            document.getElementById("date-raw").value = newDate;
+
+            // Trigger update if date changed
+            if (window.currentDate !== newDate) {
+              window.currentDate = newDate;
+              window.selectedNode = null; // Clear selection when changing dates
+
+              // Import from app.js
+              if (typeof fetchVelocityMap === 'function') {
+                fetchVelocityMap();
+              }
+            }
+          }
+        }
+      });
+
+      // Time series min date filter
+      flatpickr("#xmin-date-picker", {
+        enable: datesIso,
+        dateFormat: "d/m/Y",
+        allowInput: true,
+        disableMobile: true,
+        defaultDate: firstDisplay,
+      });
+
+      // Time series max date filter
+      flatpickr("#xmax-date-picker", {
+        enable: datesIso,
+        dateFormat: "d/m/Y",
+        allowInput: true,
+        disableMobile: true,
+        defaultDate: lastDisplay,
+      });
+
+      // Set initial raw date
+      document.getElementById("date-raw").value = datesRaw[0];
+
+      // Previous date button
+      document.getElementById("prev-date").addEventListener("click", () => {
+        const currentRaw = document.getElementById("date-raw").value;
+        const currentIdx = datesRaw.indexOf(currentRaw);
+
+        if (currentIdx > 0) {
+          const newIdx = currentIdx - 1;
+          document.getElementById("date-raw").value = datesRaw[newIdx];
+          mainPicker.setDate(datesDisplay[newIdx], true); // This triggers onChange
+        }
+      });
+
+      // Next date button
+      document.getElementById("next-date").addEventListener("click", () => {
+        const currentRaw = document.getElementById("date-raw").value;
+        const currentIdx = datesRaw.indexOf(currentRaw);
+
+        if (currentIdx < datesRaw.length - 1) {
+          const newIdx = currentIdx + 1;
+          document.getElementById("date-raw").value = datesRaw[newIdx];
+          mainPicker.setDate(datesDisplay[newIdx], true); // This triggers onChange
+        }
+      });
+
+    } else {
+      console.error("No dates available");
+      alert("No data dates available. Check your DATA_DIR configuration.");
+    }
+  </script>
+  <script src="/static/app.js"></script>
+
+
+</body>
+
+</html>
