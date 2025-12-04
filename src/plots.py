@@ -550,7 +550,7 @@ def make_timeseries_figure(
 
 def _add_trace_with_error_band(
     fig: go.Figure,
-    x: list[str],
+    x: list[datetime],
     y: np.ndarray,
     y_std: np.ndarray | None,
     name: str,
@@ -584,7 +584,7 @@ def _add_trace_with_error_band(
                     [y_upper, y_lower[::-1]]
                 ),  # upper, then lower reversed
                 fill="toself",
-                fillcolor=_rgba_from_name(color, alpha=0.2),
+                fillcolor=_rgba_from_name(color, alpha=0.1),
                 line=dict(color="rgba(255,255,255,0)"),  # Transparent line
                 hoverinfo="skip",
                 showlegend=False,

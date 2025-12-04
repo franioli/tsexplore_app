@@ -63,6 +63,66 @@ BACKGROUND_IMAGE = os.getenv("BACKGROUND_IMAGE", "")
 DT_DAYS_PREFERRED = int(os.getenv("DT_DAYS_PREFERRED", "3"))
 
 
+def run_ts_inversion(
+    data_dir,
+    file_pattern,
+    filename_pattern,
+    node_x,
+    node_y,
+):
+    from .inversion import invert_node2, load_dic_data
+
+    logger.info("Running time series inversion for single node...")
+    # Load all DIC data once
+    # TODO: DO NOT READ all the data every time, optimize this
+    dic_data = load_dic_data(data_dir)
+
+    # Get node index from KDTree
+    tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
+    dist, node_idx = tree.query([node_x, node_y], k=1)
+    if not np.isfinite(dist):
+        raise ValueError(f"Could not locate node at ({node_x}, {node_y})")
+    logger.debug(f"Found node index {node_idx} at distance {dist:.2f}px")
+
+    # Extract data for this node
+    ew_series = dic_data["ew"][:, node_idx]
+    ns_series = dic_data["ns"][:, node_idx]
+    ensamble_mad = dic_data["weight"][:, node_idx]
+    timestamp = dic_data["timestamp"]
+
+    # Run inversion for this node
+    logger.info(
+        f"Starting inversion computation at node index {node_idx} - ({node_x:.1f}, {node_y:.1f})"
+    )
+    inversion_results = invert_node2(
+        ew_series=ew_series,
+        ns_series=ns_series,
+        timestamp=timestamp,
+        node_idx=node_idx,
+        node_x=coords[node_idx, 0],
+        node_y=coords[node_idx, 1],
+        weight_method="variable",
+        weight_variable=ensamble_mad,
+        regularization_method="laplacian",
+        lambda_scaling=1.0,
+        iterates=10,
+    )
+
+    if inversion_results is None:
+        raise ValueError("Inversion returned None (invalid data)")
+
+    # Unpack inversion results
+    ew_hat = inversion_results["EW_hat"]
+    ns_hat = inversion_results["NS_hat"]
+    time_hat = inversion_results["Time_hat"]  # Shape: (n_inverted, 3)
+    logger.info(
+        "Inversion results obtained successfully: "
+        f"   Inversion output: {len(ew_hat)} time steps, "
+    )
+
+    return ew_hat, ns_hat, time_hat
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Preload all data on startup."""
@@ -264,79 +324,6 @@ async def api_velocity_map(
         return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
-def run_ts_inversion_dummy():
-    """Placeholder for TS inversion procedure."""
-    import time
-
-    logger.info("Running time series inversion procedure...")
-    time.sleep(5)  # Simulate time-consuming process
-
-    # create a fake array of results with random numbers but the same length as dates
-    dates = get_loaded_dates()
-    results = np.random.rand(len(dates))
-
-    logger.info("Time series inversion procedure completed.")
-
-    return results
-
-
-def run_ts_inversion(
-    data_dir,
-    file_pattern,
-    filename_pattern,
-    node_x,
-    node_y,
-):
-    from .inversion import invert_node, load_dic_data
-
-    logger.info("Running time series inversion for single node...")
-    # Load all DIC data once
-    # TODO: DO NOT READ all the data again, optimize this
-    dic_data = load_dic_data(data_dir)
-
-    # Get node index from KDTree
-    tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
-    dist, node_idx = tree.query([node_x, node_y], k=1)
-    if not np.isfinite(dist):
-        raise ValueError(f"Could not locate node at ({node_x}, {node_y})")
-    logger.debug(f"Found node index {node_idx} at distance {dist:.2f}px")
-
-    # Extract data for this node
-    ew_series = dic_data["ew"][:, node_idx]
-    ns_series = dic_data["ns"][:, node_idx]
-    weight_series = dic_data["weight"][:, node_idx]
-    timestamp = dic_data["timestamp"]
-
-    # Run inversion for this node
-    logger.info(
-        f"Starting inversion computation at node index {node_idx} - ({node_x:.1f}, {node_y:.1f})"
-    )
-    inversion_results = invert_node(
-        ew_series=ew_series,
-        ns_series=ns_series,
-        weight_series=weight_series,
-        timestamp=timestamp,
-        node_idx=node_idx,
-        node_x=coords[node_idx, 0],
-        node_y=coords[node_idx, 1],
-        iterates=10,
-    )
-
-    if inversion_results is None:
-        raise ValueError("Inversion returned None (invalid data)")
-
-    # Unpack inversion results
-    ew_hat = inversion_results["EW_hat"]
-    ns_hat = inversion_results["NS_hat"]
-    time_hat = inversion_results["Time_hat"]  # Shape: (n_inverted, 3)
-    logger.info(
-        "Inversion results obtained successfully: "
-        f"   Inversion output: {len(ew_hat)} time steps, "
-    )
-
-    return ew_hat, ns_hat, time_hat
-
-
 @app.get("/api/timeseries")
 async def api_timeseries(
     node_x: float,
@@ -402,10 +389,10 @@ async def api_timeseries(
         u_std = None
         v_std = None
         V_std = None
-        if show_error_band and ts.get("nmad") is not None:
-            V_std = np.array(ts.get("nmad"))
-            metadata["Error metric"] = "NMAD"
-            metadata["Mean NMAD"] = float(np.mean(ts["nmad"]))
+        if show_error_band and ts.get("ensamble_mad") is not None:
+            V_std = np.array(ts.get("ensamble_mad"))
+            metadata["Error metric"] = "Ensamble MAD"
+            metadata["Average Ensamble MAD"] = float(np.mean(ts["ensamble_mad"]))
 
         # Prepare node coordinates
         node_coords = {"x": node_x, "y": node_y}
