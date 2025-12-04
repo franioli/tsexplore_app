@@ -1,12 +1,14 @@
 import base64
 import logging
+from collections.abc import Sequence
+from datetime import datetime
 from io import BytesIO
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
-import plotly.graph_objects as go
 from dotenv import load_dotenv
 from PIL import Image
+from plotly import graph_objects as go
 
 load_dotenv()
 
@@ -94,50 +96,74 @@ def _create_raster_grid(x, y, values):
     return Xi, Yi, Zi
 
 
+# ...existing imports...
+
+
 def make_velocity_map_figure(
     x: np.ndarray,
     y: np.ndarray,
     mag: np.ndarray,
     std: np.ndarray | None = None,
     plot_type: Literal["scatter", "raster"] = "scatter",
-    cmin=None,
-    cmax=None,
-    colorscale="Viridis",
-    marker_size=6,
-    marker_opacity=0.7,
-    downsample_points=5000,
-    selected_node=None,
-    units="velocity (px/day)",
+    cmin: float | None = None,
+    cmax: float | None = None,
+    colorscale: str = "Viridis",
+    marker_size: int = 6,
+    marker_opacity: float = 0.7,
+    downsample_points: int = 5000,
+    selected_node: dict[str, float] | None = None,
+    units: str = "velocity (px/day)",
     background_image_path: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> go.Figure:
     """
     Create scatter or raster velocity/displacement plot.
     Data selection and units already handled by caller.
 
     Args:
-        x, y: Coordinate arrays
+        x: X coordinate array
+        y: Y coordinate array
         mag: Magnitude array (velocity or displacement)
-        u, v: Component arrays
-        nmad: Metadata array
+        std: Standard deviation array (optional, not yet implemented)
         plot_type: "scatter" or "raster"
-        cmin, cmax: Color scale limits
+        cmin: Minimum color scale value
+        cmax: Maximum color scale value
         colorscale: Plotly colorscale name
         marker_size: Size of scatter markers
-        marker_opacity: Opacity of markers
-        downsample_points: Max points to display
-        selected_node: Dict with x, y of selected node
-        units: Label for data units
-        background_image_path: Path to background image (optional)
+        marker_opacity: Opacity of markers (0-1)
+        downsample_points: Maximum number of points to display
+        selected_node: Dictionary with "x" and "y" keys for selected node
+        units: Label for data units (e.g., "velocity (px/day)")
+        background_image_path: Path to background image file
+        metadata: Dictionary of metadata to display on plot. Keys are labels,
+                 values are formatted automatically. Example:
+                 {"Date": "2021-08-05", "dt": 3, "Mean velocity": 1.234,
+                  "Std": 0.456, "N points": 10000}
 
     Returns:
-        Plotly Figure object
+        Plotly Figure object with velocity/displacement map
+
+    Example:
+        >>> metadata = {
+        ...     "Date": "2021-08-05",
+        ...     "dt (days)": 3,
+        ...     "Mean |v|": 1.234,
+        ...     "Std |v|": 0.456,
+        ...     "N points": 10000,
+        ... }
+        >>> fig = make_velocity_map_figure(x, y, mag, metadata=metadata)
     """
     if plot_type not in {"scatter", "raster"}:
         logger.error(f"Unknown plot type: {plot_type}")
         plot_type = "scatter"
 
-    logger.info(f"Creating {plot_type} plot")
+    logger.info(f"Creating {plot_type} plot with {len(x)} points")
     fig = go.Figure()
+
+    if std is not None:
+        logger.warning(
+            "Standard deviation visualization not implemented in this version"
+        )
 
     # Use cached image
     img_src, img_size = _get_cached_image(background_image_path)
@@ -233,6 +259,7 @@ def make_velocity_map_figure(
             )
         )
 
+    # Determine axis ranges
     if img_size:
         img_w, img_h = img_size
         x_range = [0, img_w]
@@ -241,8 +268,33 @@ def make_velocity_map_figure(
         x_range = [float(np.min(x)), float(np.max(x))]
         y_range = [float(np.max(y)), float(np.min(y))]
 
+    # Build title with optional metadata
+    title_text = f"Velocity Field - {units}"
+
+    # Add metadata as annotation if provided
+    if metadata:
+        metadata_text = _format_metadata(metadata)
+
+        # Add metadata annotation in top-right corner
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.98,
+            y=0.98,
+            xanchor="right",
+            yanchor="top",
+            text=metadata_text,
+            showarrow=False,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="rgba(0, 0, 0, 0.3)",
+            borderwidth=1,
+            borderpad=8,
+            font=dict(size=11, family="monospace", color="black"),
+            align="left",
+        )
+
     fig.update_layout(
-        title=dict(text=f"Velocity Field - {units}", font=dict(size=16)),
+        title=dict(text=title_text, font=dict(size=16)),
         xaxis=dict(
             range=x_range,
             constrain="domain",
@@ -260,75 +312,196 @@ def make_velocity_map_figure(
     return fig
 
 
+def _format_metadata(metadata: dict[str, Any]) -> str:
+    """
+    Format metadata dictionary into a nice text annotation.
+
+    Args:
+        metadata: Dictionary with metadata key-value pairs
+
+    Returns:
+        Formatted HTML string for annotation
+
+    Example:
+        >>> meta = {"Date": "2021-08-05", "dt": 3, "Mean": 1.234}
+        >>> _format_metadata(meta)
+        '<b>Date:</b> 2021-08-05<br><b>dt:</b> 3<br><b>Mean:</b> 1.23'
+    """
+    lines = []
+
+    for key, value in metadata.items():
+        # Format value based on type
+        if isinstance(value, float):
+            # Format floats with 2-3 decimal places
+            if abs(value) < 0.01 or abs(value) > 1000:
+                formatted_value = f"{value:.2e}"  # Scientific notation
+            else:
+                formatted_value = f"{value:.3f}"
+        elif isinstance(value, int):
+            # Format integers with thousand separators
+            formatted_value = f"{value:,}"
+        elif isinstance(value, (list, tuple)):
+            # Format sequences
+            formatted_value = ", ".join(str(v) for v in value)
+        else:
+            # String or other types
+            formatted_value = str(value)
+
+        lines.append(f"<b>{key}:</b> {formatted_value}")
+
+    return "<br>".join(lines)
+
+
 def make_timeseries_figure(
-    dates: list,
+    dates: list[datetime],
     u: np.ndarray,
     v: np.ndarray,
     V: np.ndarray,
-    components=None,
-    marker_mode="lines+markers",
-    node_coords=None,
-    y_label="Velocity (px/day)",
-    xmin_date=None,
-    xmax_date=None,
-    ymin=None,
-    ymax=None,
+    u_std: np.ndarray | None = None,
+    v_std: np.ndarray | None = None,
+    V_std: np.ndarray | None = None,
+    components: Sequence[str] | None = None,
+    marker_mode: Literal["lines+markers", "lines", "markers"] = "lines+markers",
+    y_label: str = "Value",
+    node_coords: dict[str, float] | None = None,
+    xmin_date: str | None = None,
+    xmax_date: str | None = None,
+    ymin: float | None = None,
+    ymax: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> go.Figure:
     """
-    Create time series plot. Data selection and units already handled by caller.
+    Create time series plot with optional error bands.
+    Data selection and units already handled by caller.
 
     Args:
-        dates: List of dates
-        u, v, V: Component arrays (already in correct units)
-        components: List of components to plot (e.g., ["u", "v", "V"])
-        marker_mode: "lines+markers", "lines", or "markers"
-        node_coords: Dict with "x", "y" of node
-        y_label: Y-axis label
-        xmin_date, xmax_date: Date range limits
-        ymin, ymax: Y-axis limits
+        dates: List of date datetime objects (e.g., [datetime(2021, 8, 5), datetime(2021, 8, 8), ...])
+        u: East component array (velocity or displacement)
+        v: North component array (velocity or displacement)
+        V: Magnitude array (velocity or displacement)
+        u_std: Standard deviation of u component (optional)
+        v_std: Standard deviation of v component (optional)
+        V_std: Standard deviation of magnitude (optional)
+        components: Sequence of component names to plot.
+                   Valid values: "u", "v", "V". Default: ["V"]
+                   Example: ["u", "v"] or ("V",) or {"u", "V"}
+        marker_mode: Display mode - "lines+markers", "lines", or "markers"
+        y_label: Y-axis label (e.g., "Velocity (px/day)")
+        node_coords: Dictionary with "x" and "y" keys for node coordinates
+        xmin_date: Minimum date for x-axis (ISO format or display format)
+        xmax_date: Maximum date for x-axis (ISO format or display format)
+        ymin: Minimum value for y-axis
+        ymax: Maximum value for y-axis
+        metadata: Dictionary of metadata to display on plot. Keys are labels,
+                 values are formatted automatically. Example:
+                 {"Node": "(1234.5, 5678.9)", "Mean |v|": 1.234}
 
     Returns:
-        Plotly Figure object
-    """
+        Plotly Figure object with time series plot
 
-    logger.info("Creating time series plot")
+    Raises:
+        ValueError: If standard deviation arrays don't match data array sizes
+
+    Example:
+        >>> dates = ["2021-08-05", "2021-08-08", "2021-08-11"]
+        >>> u = np.array([1.2, 1.5, 1.8])
+        >>> V = np.array([2.1, 2.3, 2.5])
+        >>> V_std = np.array([0.1, 0.15, 0.12])
+        >>> fig = make_timeseries_figure(
+        ...     dates,
+        ...     u,
+        ...     v,
+        ...     V,
+        ...     V_std=V_std,
+        ...     components=["V"],
+        ...     y_label="Velocity (px/day)",
+        ... )
+    """
+    logger.info(f"Creating time series plot with {len(dates)} dates")
+
+    if not dates:
+        logger.warning("No dates provided for time series")
+        return go.Figure()
+
+    # Validate data arrays have same length
+    n_points = len(dates)
+    if len(u) != n_points or len(v) != n_points or len(V) != n_points:
+        raise ValueError(
+            f"Data arrays must have same length as dates ({n_points}). "
+            f"Got: u={len(u)}, v={len(v)}, V={len(V)}"
+        )
+
+    # Validate standard deviation arrays if provided
+    if u_std is not None and len(u_std) != n_points:
+        raise ValueError(
+            f"u_std must have same length as dates ({n_points}), got {len(u_std)}"
+        )
+    if v_std is not None and len(v_std) != n_points:
+        raise ValueError(
+            f"v_std must have same length as dates ({n_points}), got {len(v_std)}"
+        )
+    if V_std is not None and len(V_std) != n_points:
+        raise ValueError(
+            f"V_std must have same length as dates ({n_points}), got {len(V_std)}"
+        )
+
     fig = go.Figure()
 
-    # Get label of the components to plot
-    components = components or ["V"]
+    # Validate component names
+    components = list(components) if components is not None else ["V"]
+    valid_components = {"u", "v", "V"}
+    invalid = set(components) - valid_components
+    if invalid:
+        logger.warning(f"Invalid component names: {invalid}. Valid: {valid_components}")
+        components = [c for c in components if c in valid_components]
 
-    # Add traces for selected components
+    # Color mapping for components
+    component_colors = {
+        "u": "blue",
+        "v": "green",
+        "V": "red",
+    }
+    component_names = {
+        "u": "u (East)",
+        "v": "v (North)",
+        "V": "|v|",
+    }
+
+    # Add traces for selected components with error bands
     if "u" in components:
-        fig.add_trace(
-            go.Scattergl(
-                x=dates,
-                y=u,
-                mode=marker_mode,
-                name="u (East)",
-                line=dict(color="blue", width=2),
-            )
-        )
-    if "v" in components:
-        fig.add_trace(
-            go.Scattergl(
-                x=dates,
-                y=v,
-                mode=marker_mode,
-                name="v (North)",
-                line=dict(color="green", width=2),
-            )
-        )
-    if "V" in components:
-        fig.add_trace(
-            go.Scattergl(
-                x=dates,
-                y=V,
-                mode=marker_mode,
-                name="|v|",
-                line=dict(color="red", width=2),
-            )
+        _add_trace_with_error_band(
+            fig=fig,
+            x=dates,
+            y=u,
+            y_std=u_std,
+            name=component_names["u"],
+            color=component_colors["u"],
+            marker_mode=marker_mode,
         )
 
+    if "v" in components:
+        _add_trace_with_error_band(
+            fig=fig,
+            x=dates,
+            y=v,
+            y_std=v_std,
+            name=component_names["v"],
+            color=component_colors["v"],
+            marker_mode=marker_mode,
+        )
+
+    if "V" in components:
+        _add_trace_with_error_band(
+            fig=fig,
+            x=dates,
+            y=V,
+            y_std=V_std,
+            name=component_names["V"],
+            color=component_colors["V"],
+            marker_mode=marker_mode,
+        )
+
+    # Build title
     title = "Time Series"
     if node_coords:
         title += f" - Node: ({node_coords['x']:.1f}, {node_coords['y']:.1f})"
@@ -350,4 +523,109 @@ def make_timeseries_figure(
         hovermode="x unified",
     )
 
+    # Add metadata as annotation if provided
+    if metadata:
+        metadata_text = _format_metadata(metadata)
+
+        # Add metadata annotation in top-right corner
+        fig.add_annotation(
+            xref="paper",
+            yref="paper",
+            x=0.95,
+            y=0.98,
+            xanchor="right",
+            yanchor="top",
+            text=metadata_text,
+            showarrow=False,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="rgba(0, 0, 0, 0.3)",
+            borderwidth=1,
+            borderpad=8,
+            font=dict(size=11, family="monospace", color="black"),
+            align="left",
+        )
+
     return fig
+
+
+def _add_trace_with_error_band(
+    fig: go.Figure,
+    x: list[str],
+    y: np.ndarray,
+    y_std: np.ndarray | None,
+    name: str,
+    color: str,
+    marker_mode: str,
+) -> None:
+    """
+    Add a trace with optional error band (±1 std) to a figure.
+
+    Args:
+        fig: Plotly Figure object to add trace to
+        x: X-axis values (dates)
+        y: Y-axis values (data)
+        y_std: Standard deviation array (optional)
+        name: Trace name for legend
+        color: Color for line and fill
+        marker_mode: Display mode - "lines+markers", "lines", or "markers"
+    """
+    # Add error band if std is provided
+    if y_std is not None:
+        # Upper bound
+        y_upper = y + y_std
+        # Lower bound
+        y_lower = y - y_std
+
+        # Add filled area for error band (±1 std)
+        fig.add_trace(
+            go.Scatter(
+                x=x + x[::-1],  # x, then x reversed
+                y=np.concatenate(
+                    [y_upper, y_lower[::-1]]
+                ),  # upper, then lower reversed
+                fill="toself",
+                fillcolor=_rgba_from_name(color, alpha=0.2),
+                line=dict(color="rgba(255,255,255,0)"),  # Transparent line
+                hoverinfo="skip",
+                showlegend=False,
+                name=f"{name} ±1σ",
+            )
+        )
+
+    # Add main line trace
+    fig.add_trace(
+        go.Scattergl(
+            x=x,
+            y=y,
+            mode=marker_mode,
+            name=name,
+            line=dict(color=color, width=2),
+            marker=dict(size=6),
+        )
+    )
+
+
+def _rgba_from_name(color_name: str, alpha: float = 1.0) -> str:
+    """
+    Convert color name to rgba string with specified alpha.
+
+    Args:
+        color_name: Color name (e.g., "blue", "red", "green")
+        alpha: Alpha/opacity value (0-1)
+
+    Returns:
+        RGBA color string (e.g., "rgba(0, 0, 255, 0.2)")
+    """
+    color_map = {
+        "blue": "0, 0, 255",
+        "red": "255, 0, 0",
+        "green": "0, 128, 0",
+        "orange": "255, 165, 0",
+        "purple": "128, 0, 128",
+        "cyan": "0, 255, 255",
+        "magenta": "255, 0, 255",
+        "yellow": "255, 255, 0",
+    }
+
+    rgb = color_map.get(color_name.lower(), "128, 128, 128")  # Default to gray
+    return f"rgba({rgb}, {alpha})"

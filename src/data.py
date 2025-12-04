@@ -153,7 +153,7 @@ def read_dic_file(
     skiprows: int = 0,
     invert_y: bool = False,
 ) -> dict[str, np.ndarray]:
-    """Read DIC results: x, y, dx, dy, magnitude, nmad (optional).
+    """Read DIC results: x, y, dx, dy, magnitude, ensamble_mad (optional).
 
     Args:
         dic_file: Path to the DIC file
@@ -161,7 +161,7 @@ def read_dic_file(
         skiprows: Number of header rows to skip (default: 0)
         invert_y: Whether to invert Y coordinates (default: False)
     Returns:
-        Dictionary with keys: "x", "y", "dx", "dy", "magnitude", "nmad"
+        Dictionary with keys: "x", "y", "dx", "dy", "magnitude", "ensamble_mad"
     """
     logger.debug(f"Reading DIC file: {dic_file}")
     try:
@@ -189,11 +189,11 @@ def read_dic_file(
         # Compute magnitude from dx, dy columns
         magnitude = np.hypot(dx, dy)
 
-        # Extract NMAD (or zeros if not present)
+        # Extract ensamble_mad (or zeros if not present)
         if data.shape[1] > 4:
-            nmad = data[:, 4]
+            ensamble_mad = data[:, 4]
         else:
-            nmad = np.zeros_like(magnitude)
+            ensamble_mad = np.zeros_like(magnitude)
 
         logger.debug(f"Loaded {len(x)} nodes from {dic_file.name}")
 
@@ -203,7 +203,7 @@ def read_dic_file(
             "dx": dx,
             "dy": dy,
             "magnitude": magnitude,
-            "nmad": nmad,
+            "ensamble_mad": ensamble_mad,
         }
 
         return dic_data
@@ -232,7 +232,7 @@ def preload_all_data(
 
     Returns:
         Dictionary mapping date strings to data dictionaries with keys:
-            "x", "y", "dx", "dy", "disp_mag", "u", "v", "V", "nmad", "dt_hours", "dt_days"
+            "x", "y", "dx", "dy", "disp_mag", "u", "v", "V", "ensamble_mad", "dt_hours", "dt_days"
 
     """
     global _ALL_DATA_CACHE
@@ -329,7 +329,7 @@ def preload_all_data(
                 "v": v_vel,
                 "V": V_vel,
                 # Metadata
-                "nmad": dic_data["nmad"],
+                "ensamble_mad": dic_data["ensamble_mad"],
                 "dt_hours": dt_hours,
                 "dt_days": int(dt_hours / 24),
             }
@@ -392,20 +392,32 @@ def load_all_series(
 ) -> dict:
     """
     Fast time series extraction using preloaded data and KDTree.
+    Returns all available data for the node across all dates.
+
     Args:
         data_dir: Path to data directory
         file_pattern: File pattern for DIC files
         filename_pattern: Pattern to extract dates from filename
         node_x: X coordinate of the node
         node_y: Y coordinate of the node
+
     Returns:
-        Dictionary with time series data:
-            "dates": list of date strings
-            "u": list of u velocities
-            "v": list of v velocities
-            "V": list of velocity magnitudes
-            "nmad": list of nmad values
-            "dt_days": list of dt_days values
+        Dictionary with time series data containing all fields:
+            "dates": list of date strings (YYYYMMDD format)
+            "dt_hours": list of time differences in hours
+            "dt_days": list of time differences in days
+            "dx": list of x-displacement values (px)
+            "dy": list of y-displacement values (px)
+            "disp_mag": list of displacement magnitudes (px)
+            "u": list of x-velocity values (px/day)
+            "v": list of y-velocity values (px/day)
+            "V": list of velocity magnitudes (px/day)
+            "ensamble_mad": list of ensamble MAD values, if available (px)
+
+    Example:
+        >>> ts = load_all_series(data_dir, "*.txt", None, 1000.0, 2000.0)
+        >>> print(len(ts["dates"]))  # Number of time steps
+        >>> print(ts["V"][0])  # Velocity magnitude at first time step
     """
     logger.info(f"Loading time series for node ({node_x}, {node_y})")
 
@@ -420,40 +432,63 @@ def load_all_series(
         logger.warning(f"No valid node found for ({node_x}, {node_y})")
         return {
             "dates": [],
+            "dt_hours": [],
+            "dt_days": [],
+            "dx": [],
+            "dy": [],
+            "disp_mag": [],
             "u": [],
             "v": [],
             "V": [],
-            "nmad": [],
-            "dt_days": [],
+            "ensamble_mad": [],
         }
 
     # Extract time series for this index across all dates
     dates_out = []
+    dt_hours_out = []
+    dt_days_out = []
+    dx_out = []
+    dy_out = []
+    disp_mag_out = []
     u_out = []
     v_out = []
     V_out = []
-    nmad_out = []
-    dt_days_out = []
-
+    ensamble_mad_out = []
     for date in sorted(all_data.keys()):
         data = all_data[date]
-
         dates_out.append(date)
+        dt_hours_out.append(int(data["dt_hours"]))
+        dt_days_out.append(int(data["dt_days"]))
+
+        # Displacement data
+        dx_out.append(float(data["dx"][idx]))
+        dy_out.append(float(data["dy"][idx]))
+        disp_mag_out.append(float(data["disp_mag"][idx]))
+
+        # Velocity data
         u_out.append(float(data["u"][idx]))
         v_out.append(float(data["v"][idx]))
         V_out.append(float(data["V"][idx]))
-        nmad_out.append(float(data["nmad"][idx]))
-        dt_days_out.append(int(data["dt_days"]))
 
-    logger.info(f"Loaded time series with {len(dates_out)} points in O(1) time")
+        # Additional metadata
+        ensamble_mad_out.append(float(data["ensamble_mad"][idx]))
+
+    logger.info(
+        f"Loaded time series with {len(dates_out)} points for node at "
+        f"({coords[idx][0]:.1f}, {coords[idx][1]:.1f}), distance={dist:.2f}px"
+    )
 
     return {
         "dates": dates_out,
+        "dt_hours": dt_hours_out,
+        "dt_days": dt_days_out,
+        "dx": dx_out,
+        "dy": dy_out,
+        "disp_mag": disp_mag_out,
         "u": u_out,
         "v": v_out,
         "V": V_out,
-        "nmad": nmad_out,
-        "dt_days": dt_days_out,
+        "ensamble_mad": ensamble_mad_out,
     }
 
 

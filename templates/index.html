@@ -214,9 +214,9 @@
       <div class="control-group">
         <label class="control-label">Marker Mode</label>
         <select id="marker-mode">
-          <option value="lines+markers" selected>Lines + Markers</option>
+          <option value="markers" selected>Markers Only</option>
           <option value="lines">Lines Only</option>
-          <option value="markers">Markers Only</option>
+          <option value="lines+markers">Lines + Markers</option>
         </select>
       </div>
       <div class="control-group">
@@ -234,6 +234,16 @@
       <div class="control-group">
         <label class="control-label">Y Max</label>
         <input type="number" id="ymax" step="0.1" placeholder="Auto" />
+      </div>
+      <div class="control-group">
+        <label class="control-label">Show error band</label>
+        <div class="checkbox-group">
+          <input type="checkbox" id="error-band" checked>
+          <label for="error-band">Ensambed mad</label>
+        </div>
+      </div>
+      <div class="control-group" style="justify-content: flex-end;">
+        <button id="ts-inversion" style="margin-top: auto;">Run TS inversion</button>
       </div>
     </div>
   </div>

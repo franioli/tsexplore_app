@@ -1,10 +1,10 @@
+// Initialize global state
 let selectedNode = null;
 let currentDate = null;
 
-
 // Make these globally accessible
-window.selectedNode = selectedNode;
 window.currentDate = currentDate;
+window.selectedNode = selectedNode;
 window.fetchVelocityMap = fetchVelocityMap;
 
 async function fetchVelocityMap() {
@@ -57,7 +57,7 @@ async function fetchVelocityMap() {
 }
 
 
-async function fetchTimeseriesAt(x, y) {
+async function fetchTimeseriesAt(x, y, runInversion = false) {
   const radius = document.getElementById("radius").value || 10;
 
   try {
@@ -81,7 +81,8 @@ async function fetchTimeseriesAt(x, y) {
     const selectedOptions = Array.from(componentsSelect.selectedOptions).map(opt => opt.value);
     const components = selectedOptions.join(",") || "V";
     const markerMode = document.getElementById("marker-mode").value;
-    
+    const showErrorBand = document.getElementById("error-band").checked;
+
     const xminDate = document.getElementById("xmin-date-picker").value || null;
     const xmaxDate = document.getElementById("xmax-date-picker").value || null;
     const ymin = document.getElementById("ymin").value || null;
@@ -93,11 +94,17 @@ async function fetchTimeseriesAt(x, y) {
     urlTS.searchParams.set("use_velocity", useVelocity);
     urlTS.searchParams.set("components", components);
     urlTS.searchParams.set("marker_mode", markerMode);
+    urlTS.searchParams.set("show_error_band", showErrorBand);
+    urlTS.searchParams.set("ts_inversion", runInversion);
+
     if (xminDate) urlTS.searchParams.set("xmin_date", xminDate);
     if (xmaxDate) urlTS.searchParams.set("xmax_date", xmaxDate);
     if (ymin) urlTS.searchParams.set("ymin", ymin);
     if (ymax) urlTS.searchParams.set("ymax", ymax);
-    
+        
+    // Debug: Log the full URL
+    console.log("Time series URL:", urlTS.toString());
+
     const resTS = await fetch(urlTS);
     if (!resTS.ok) {
       console.error("Failed to fetch timeseries:", await resTS.text());
@@ -105,10 +112,39 @@ async function fetchTimeseriesAt(x, y) {
     }
     const figTS = await resTS.json();
     await Plotly.newPlot("lower", figTS.data, figTS.layout);
+
   } catch (err) {
     console.error("Error fetching timeseries:", err);
   }
 }
+
+
+// Run TS inversion function
+async function runTSInversion() {
+  if (!window.selectedNode) {
+    alert("Please select a node first by clicking on the velocity map");
+    return;
+  }
+
+  const btn = document.getElementById("ts-inversion");
+  
+  // Disable button and change text
+  btn.disabled = true;
+  btn.textContent = "Running...";
+  
+  try {
+    // Fetch time series with inversion flag
+    await fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y, true);
+  } catch (err) {
+    console.error("Error running TS inversion:", err);
+    alert("Error running TS inversion. Check console for details.");
+  } finally {
+    // Reset button state
+    btn.disabled = false;
+    btn.textContent = "Run TS inversion";
+  }
+}
+
 
 // Auto-update velocity map when parameters change
 document.getElementById("use-velocity").addEventListener("change", () => {
@@ -146,26 +182,27 @@ document.getElementById("marker-opacity").addEventListener("input", () => {
 document.getElementById("components").addEventListener("change", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
-
 document.getElementById("marker-mode").addEventListener("change", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
-
 document.getElementById("xmin-date-picker").addEventListener("change", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
-
 document.getElementById("xmax-date-picker").addEventListener("change", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
-
 document.getElementById("ymin").addEventListener("input", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
-
 document.getElementById("ymax").addEventListener("input", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
 });
+document.getElementById("error-band").addEventListener("change", () => {
+  if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+});
+
+// Attach TS inversion button click handler
+document.getElementById("ts-inversion").addEventListener("click", runTSInversion);
 
 // Initial load - wait for DOM and date picker to be ready
 window.addEventListener("load", () => {

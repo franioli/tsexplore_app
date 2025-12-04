@@ -8,13 +8,91 @@ Fusion of multi-temporal and multi-sensor ice velocity observations -
 
 import datetime
 import glob
+import logging
 import os
-import pickle
 import time
 from pathlib import Path
 
 import numpy as np
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
+
+
+def load_dic_data(day_dic_dir: Path):
+    """
+    Load all DIC displacement data from day_*.txt files.
+
+    Args:
+        day_dic_dir: Path to directory containing day_*.txt files
+
+    Returns:
+        Dictionary containing:
+            - "ew": (n_observations, n_nodes) array of EW displacement
+            - "ns": (n_observations, n_nodes) array of NS displacement
+            - "weight": (n_observations, n_nodes) array of weights
+            - "coordinates": (n_nodes, 2) array of node coordinates
+            - "timestamp": (n_observations, 2) array of timestamps
+            - "deltat": (n_observations,) array of time differences
+    """
+    logger.info("Loading DIC data from files...")
+
+    day_dic_dir = Path(day_dic_dir)
+    if not day_dic_dir.exists():
+        raise FileNotFoundError(f"Directory {day_dic_dir} does not exist.")
+
+    data_files = sorted(glob.glob(f"{day_dic_dir}/day*.txt"))
+    if not data_files:
+        raise FileNotFoundError(f"No day*.txt files found in {day_dic_dir}")
+
+    # -leggo il primo file per determinare numero di nodi
+    meta = np.loadtxt(data_files[0], delimiter=",")
+    n_nodes = meta.shape[0]
+    n_observations = len(data_files)
+
+    # -inizializzo matrici
+    ew_data = np.zeros((n_observations, n_nodes), dtype="float32")
+    ns_data = np.zeros((n_observations, n_nodes), dtype="float32")
+    weight_data = np.zeros((n_observations, n_nodes), dtype="float32")
+    timestamp = np.zeros((n_observations, 2), dtype="datetime64[D]")
+    coordinates = meta[:, :2]
+
+    logger.info(f"Loading {n_observations} observations for {n_nodes} nodes...")
+    tic = time.time()
+
+    # -loop su tutti i file
+    for count, dat_file in enumerate(tqdm(data_files, desc="Loading DIC data")):
+        # -estraggo date dal nome del file
+        t0 = np.datetime64(
+            datetime.datetime.strptime(os.path.basename(dat_file)[8:16], "%Y%m%d")
+        ).astype("datetime64[D]")
+        t1 = np.datetime64(
+            datetime.datetime.strptime(os.path.basename(dat_file)[17:25], "%Y%m%d")
+        ).astype("datetime64[D]")
+        timestamp[count, 1] = t0  # slave
+        timestamp[count, 0] = t1  # master
+
+        # -carico file
+        file_data = np.loadtxt(dat_file, delimiter=",")
+        # -estraggo i dati: colonne sono [x, y, dx, dy, weight]
+        ew_data[count, :] = file_data[:, 2]
+        ns_data[count, :] = file_data[:, 3]
+        weight_data[count, :] = file_data[:, 4]
+
+    toc = time.time()
+    logger.info(f"Data loaded in {(toc - tic) // 1} seconds")
+
+    # -calcolo vettore deltaT
+    deltat = np.abs(np.diff(timestamp, axis=1).astype("float32")).squeeze()
+
+    return {
+        "ew": ew_data,
+        "ns": ns_data,
+        "weight": weight_data,
+        "coordinates": coordinates,
+        "timestamp": timestamp,
+        "deltat": deltat,
+    }
 
 
 def GLS_solver(y, A, weight=None, regularisation=None, l=1):
@@ -157,270 +235,271 @@ def weight_definition(
     return W0
 
 
-def run(source, regularization=10, iterates=10):
-    # -leggo dati
-    # source = Path(source)
-    data = sorted(glob.glob(f"{source}day*.txt"))
-    # -leggo il primo file per inizializzare le matrici delle time series
-    meta = np.loadtxt(data[0], delimiter=",")
-    # -meta è matrice nx5 dove le prime due colonne sono le coordinate, la terza colonna è DX, la quarta è DY e la quinta V
-    # -inizializzo i voxeloni delle componenti di spostamento
-    EW = np.zeros((meta.shape[0], len(data)), dtype="float32")
-    NS = np.zeros((meta.shape[0], len(data)), dtype="float32")
-    # -inizializzo il voxelone del peso inziale
-    WEIGHT = np.zeros((meta.shape[0], len(data)), dtype="float32")
-    # -inizializzo vettore tempo
-    timestamp = np.zeros((len(data), 2), dtype="datetime64[D]")
-    print("Importo i risultati di spostamento")
-    tic = time.time()
-    # -lancio loop
-    for count, dat in enumerate(tqdm(data, desc="Loading displacement data")):
-        # -leggo date
-        # -t0 è la data slave, mentre t1 è la master
-        t0 = np.datetime64(
-            datetime.datetime.strptime(os.path.basename(dat)[8:16], "%Y%m%d")
-        ).astype("datetime64[D]")
-        t1 = np.datetime64(
-            datetime.datetime.strptime(os.path.basename(dat)[17:25], "%Y%m%d")
-        ).astype("datetime64[D]")
-        # -popolo timestamp
-        timestamp[count, 1] = t0
-        timestamp[count, 0] = t1
-        # -carico file
-        file = np.loadtxt(dat, delimiter=",")
-        EW[:, count] = file[:, 2]
-        NS[:, count] = file[:, 3]
-        WEIGHT[:, count] = file[:, 4]
-    toc = time.time()
-    print(f"Dati di spostamento importati in {(toc - tic) // 1} secondi")
+def invert_node(
+    ew_series: np.ndarray,
+    ns_series: np.ndarray,
+    weight_series: np.ndarray,
+    timestamp: np.ndarray,
+    node_idx: int,
+    node_x: float,
+    node_y: float,
+    iterates: int = 10,
+):
+    """
+    Run time series inversion for a single node.
+
+    Args:
+        ew_series: (n_observations,) array of EW displacement for this node
+        ns_series: (n_observations,) array of NS displacement for this node
+        weight_series: (n_observations,) array of weights for this node
+        timestamp: (n_observations, 2) array of timestamps
+        node_idx: Index of this node
+        node_x: X coordinate of the node
+        node_y: Y coordinate of the node
+        iterates: Maximum number of iterations
+
+    Returns:
+        Dictionary with inversion results or None if data is invalid
+    """
+
+    # -estraggo spostamento
+    ew = ew_series.squeeze()
+    ns = ns_series.squeeze()
+    weight = weight_series.squeeze()
+
+    # -check per nan o -9999
+    nanflag = np.any(np.isnan(ew)) or np.any(np.isnan(ns))
+    ninenineflag = np.any(ew == -9999) or np.any(ns == -9999)
+
+    if nanflag or ninenineflag:
+        logger.debug(
+            f"Node {node_idx} at ({node_x:.1f}, {node_y:.1f}) contains invalid data"
+        )
+        return None
 
     # -calcolo vettore deltaT
-    deltat = np.abs(np.diff(timestamp, axis=1).astype("float32"))
-    # ---creo vettore dei tempi dove ho un'osservazione
-    # -1) cerco valori temporali per cui ho un dato
+    deltat = np.abs(np.diff(timestamp, axis=1).astype("float32")).squeeze()
+
+    # -creo vettore dei tempi per le osservazioni
     Tu = np.sort(np.unique(timestamp))
-    # -2) creo vettore degli intervalli su cui calcolare lo spostamento
     Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
-    for i in range(0, len(Tu) - 1):
-        # print(i)
+    for i in range(len(Tu) - 1):
         Time_hat[i, :] = [Tu[i], Tu[i + 1]]
-    # -calcolo deltat tra osservazioni
     DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
-    # -inizializzo matrici dei risultati
-    EW_hat = np.ones((meta.shape[0], len(DT_hat)), dtype="float32") * -9999
-    NS_hat = np.ones((meta.shape[0], len(DT_hat)), dtype="float32") * -9999
-    # -loop su tutta la mappa
-    tic = time.time()
-    print("Comincio time series inversion...")
-    for ii in tqdm(range(EW.shape[0]), desc="Inverting time series"):
-        # -estraggo spostamento e lo converto in metri
-        ew = EW[ii, :].squeeze()
-        ns = NS[ii, :].squeeze()
-        weight = WEIGHT[ii, :].squeeze()
-        # -se c'è anche un solo nan nella serie metto a nan il pixel e passo alla successiva iterata
-        nanflag = np.any(np.isnan(ew)) or np.any(np.isnan(ns))
-        ninenineflag = np.any(ew == -9999) or np.any(ns == -9999)
-        if nanflag or ninenineflag:
-            EW_hat[ii, :] = -9999
-            NS_hat[ii, :] = -9999
-            continue
-        # ---creo vettore dei tempi dove ho un'osservazione
-        # --- questo è inutile visto che l'ho già calcolato sopra ---
-        # -1) cerco valori temporali per cui ho un dato
-        Tu = np.sort(np.unique(timestamp))
-        # -2) creo vettore degli intervalli su cui calcolare lo spostamento
-        Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
-        for i in range(len(Tu) - 1):
-            Time_hat[i, :] = [Tu[i], Tu[i + 1]]
-        # -calcolo deltat tra osservazioni
-        DT_hat = np.diff(Time_hat, axis=1).astype("float32").squeeze()
-        # -3) inizializzo matrice di regressione M
-        A = np.zeros((len(ew), Time_hat.shape[0])).astype("float32")
-        # -4) popolo M
-        for i in range(timestamp.shape[0]):
-            pun = (Time_hat[:, 0] >= timestamp[i, 0]) & (
-                Time_hat[:, 1] <= timestamp[i, 1]
-            )
-            A[i, pun] = 1
-        # -observations
-        n = A.shape[0]
-        # -numero incognite
-        p = A.shape[1]
-        # -calcolo le due componenti
-        comps = [ew, ns]
-        for [enum, comp] in enumerate(comps):
-            # -definisco i pesi
-            # W0 = weight_definition(ew, ns, method="residuals", deltat=deltat)
-            # W0 = weight_definition (ew, ns, method="Charrier", deltat=deltat,
-            # EW=EW, NS=NS, c=(ii, jj), cc=None)
-            # W0 = weight_definition(ew, ns, method="uniform")
-            W0 = weight_definition(ew, ns, method="variable", cc=weight)
 
-            # -regularisation term
-            L = np.diag(np.ones(p) / DT_hat.squeeze()).astype("float32")
-            for i in range(L.shape[0] - 1):
-                L[i, i + 1] = -1 / DT_hat[i + 1]
-            # -scaling parameter
-            # regularization = np.std(comp)
-            # regularization = 3*np.median(np.abs(comp-np.median(comp)))
-            # l = np.mean(deltat) * regularization
-            l = 1
-            # print("Scaling term lambda:", l)
-            # calcolo prima iterata
-            X = GLS_solver(comp, A, weight=W0, regularisation=L, l=l)
-            # -inizializzo fattore di improvement
-            eps = 1
-            # -inizializzo contatore
-            count = 0
-            # -se il miglioramento medio è minore di 0.01 o se supero le 10 iterate
-            # -allora fermo la time series inversion
-            while (eps > 0.01) and (count < iterates):
-                # -aggiorno pesi
-                if count == 0:
-                    W = np.copy(W0)
-                Wu, Ru = weight_update(
-                    X, comp, A, weight=W, regularisation=L, W0=W0, l=l
-                )
-                # -se ci sono dei pesi a nan li pongo uguali a zero
-                Wu[np.isnan(Wu)] = 0
-                # -ricalcolo risultato
-                Xu = GLS_solver(comp, A, weight=Wu, regularisation=L, l=l)
-                # -calcolo improvement
-                eps = np.mean(abs(X - Xu))
-                X = np.copy(Xu)
-                W = np.copy(Wu)
-                count += 1
-                # V_hat = X/DT_hat.squeeze()*365
-                V_hat = X / DT_hat.squeeze()
+    # -inizializzo matrice di regressione A
+    A = np.zeros((len(ew), Time_hat.shape[0])).astype("float32")
+    for i in range(timestamp.shape[0]):
+        pun = (Time_hat[:, 0] >= timestamp[i, 0]) & (Time_hat[:, 1] <= timestamp[i, 1])
+        A[i, pun] = 1
 
-            # -popolo output
-            if enum == 0:
-                EW_hat[ii, :] = V_hat
-            elif enum == 1:
-                NS_hat[ii, :] = V_hat
+    # -observations e incognite
+    n = A.shape[0]
+    p = A.shape[1]
 
-        # print(f"{ii} of {EW.shape[0]}")
+    # -calcolo le due componenti
+    EW_hat = np.zeros(len(DT_hat), dtype="float32")
+    NS_hat = np.zeros(len(DT_hat), dtype="float32")
 
-    toc = time.time()
-    print(f"Time series inversion ends in {(toc - tic) // 1} seconds")
+    comps = [ew, ns]
+    comp_names = ["EW", "NS"]
+
+    for enum, (comp, comp_name) in enumerate(zip(comps, comp_names)):
+        # -definisco i pesi
+        W0 = weight_definition(ew, ns, method="residuals", deltat=deltat)
+        # W0 = weight_definition(
+        #     ew, ns, method="Charrier", deltat=deltat, EW=EW, NS=NS, c=(ii, jj), cc=None
+        # )
+        # W0 = weight_definition(ew, ns, method="uniform")
+        # W0 = weight_definition(ew, ns, method="variable", cc=weight)
+
+        # -regularisation term
+        L = np.diag(np.ones(p) / DT_hat.squeeze()).astype("float32")
+        for i in range(L.shape[0] - 1):
+            L[i, i + 1] = -1 / DT_hat[i + 1]
+
+        # -scaling parameter
+        l = 1
+        # regularization = np.std(comp)
+        # regularization = 3*np.median(np.abs(comp-np.median(comp)))
+        # l = np.mean(deltat) * regularization
+        # print("Scaling term lambda:", l)
+
+        # -calcolo prima iterata
+        X = GLS_solver(comp, A, weight=W0, regularisation=L, l=l)
+        V_hat = X / DT_hat.squeeze()
+
+        # -inizializzo fattore di improvement eps e contatore
+        eps = 1
+        count = 0
+
+        # -loop di iterazione
+        # -se il miglioramento medio è minore di 0.01 o se supero le 10 iterate allora fermo la time series inversion
+        while (eps > 0.01) and (count < iterates):
+            # -aggiorno pesi
+            if count == 0:
+                W = np.copy(W0)
+            Wu, Ru = weight_update(X, comp, A, weight=W, regularisation=L, W0=W0, l=l)
+            # -se ci sono dei pesi a nan li pongo uguali a zero
+            Wu[np.isnan(Wu)] = 0
+            # -ricalcolo risultato
+            Xu = GLS_solver(comp, A, weight=Wu, regularisation=L, l=l)
+            # -calcolo improvement
+            eps = np.mean(abs(X - Xu))
+            X = np.copy(Xu)
+            W = np.copy(Wu)
+            count += 1
+            # V_hat = X/DT_hat.squeeze()*365
+            V_hat = X / DT_hat.squeeze()
+
+        # -popolo output
+        if enum == 0:
+            EW_hat = V_hat
+        elif enum == 1:
+            NS_hat = V_hat
 
     # -calcolo anche il tempo medio
-    tm = timestamp[:, 0][:, None] + (deltat / 2 * 24).astype("timedelta64[h]")
+    tm = timestamp[:, 0][:, None] + (deltat[:, None] / 2 * 24).astype("timedelta64[h]")
     timestamp = np.hstack((timestamp, tm))
-
     TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
     Time_hat = np.hstack((Time_hat, TM))
 
     output = {
         "EW_hat": EW_hat,
         "NS_hat": NS_hat,
-        "EW": EW,
-        "NS": NS,
+        "EW": ew,
+        "NS": ns,
         "timestamp": timestamp,
-        "deltat": deltat.squeeze(),
+        "deltat": deltat,
         "DT_hat": DT_hat.squeeze(),
         "Time_hat": Time_hat,
-        "coordinates": meta[:, :2] * np.array([1, 1]),
     }
 
     return output
 
 
-# -Fine
-
-
-def fplot(O, pts):
-    import matplotlib.pyplot as plt
-
-    plt.ioff()
-    """
-    funzione per plottare le time series di una lista di punti
-    """
-
-    for ij in pts:
-        i, j = ij[0], ij[1]
-        idx = np.argmin(
-            np.hypot(O["coordinates"][:, 0] - j, O["coordinates"][:, 1] - i)
-        )
-
-        plt.figure()
-        plt.subplot(2, 1, 1)
-        plt.plot(
-            O["timestamp"][:, 2],
-            O["NS"][idx, :] / O["deltat"],
-            marker="o",
-            linestyle=" ",
-        )
-        plt.plot(O["Time_hat"][:, 2], O["NS_hat"][idx, :], marker="o", linestyle="")
-        plt.legend(("Original", "Inversion"))
-        plt.title(f"NS {O['coordinates'][idx, :]}")
-        plt.subplot(2, 1, 2)
-        plt.plot(
-            O["timestamp"][:, 2],
-            O["EW"][idx, :] / O["deltat"],
-            marker="o",
-            linestyle=" ",
-        )
-        plt.plot(O["Time_hat"][:, 2], O["EW_hat"][idx, :], marker="o", linestyle="")
-        plt.legend(("Original", "Inversion"))
-        plt.title(f"EW {O['coordinates'][idx, :]}")
-        plt.show()
-
-
-def save_inversion_results(
-    results: dict,
-    destination: str,
-    base_name: str = "time_series_inversion",
-    delimiter: str = ",",
+def run_ts_inversion(
+    day_dic_dir: Path,
+    regularization: int = 10,
+    iterates: int = 10,
 ):
-    out_dir = Path(destination)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Run time series inversion for all nodes in the dataset.
 
-    # save result object as pickle
-    pickle.DEFAULT_PROTOCOL = pickle.HIGHEST_PROTOCOL
-    with open(out_dir / f"{base_name}_results.pkl", "wb") as f:
-        pickle.dump(results, f)
+    Workflow:
+    1) Load all DIC data with load_dic_data()
+    2) Extract node information
+    3) Call invert_node() for each node
 
-    # -salvo risultati
-    header = [f"{x}" for x in results["Time_hat"][:, 2]]
-    header.insert(0, "Y")
-    header.insert(0, "X")
-    header = f"{delimiter}".join(header)
-    X = np.hstack((results["coordinates"], results["EW_hat"]))
-    np.savetxt(
-        out_dir / f"{base_name}_ew.txt", X, header=f"{header}", delimiter=delimiter
-    )
-    Y = np.hstack((results["coordinates"], results["NS_hat"]))
-    np.savetxt(
-        out_dir / f"{base_name}_ns.txt", Y, header=f"{header}", delimiter=delimiter
-    )
+    Args:
+        day_dic_dir: Path to directory containing day_*.txt files
+        regularization: Regularization parameter (for future use)
+        iterates: Maximum number of iterations for inversion
+
+    Returns:
+        Dictionary with inversion results for all nodes
+    """
+    logger.info("Starting time series inversion for all nodes")
+
+    # -Step 1: Load all data
+    dic_data = load_dic_data(day_dic_dir)
+
+    ew_data = dic_data["ew"]  # (n_observations, n_nodes)
+    ns_data = dic_data["ns"]  # (n_observations, n_nodes)
+    weight_data = dic_data["weight"]  # (n_observations, n_nodes)
+    coordinates = dic_data["coordinates"]  # (n_nodes, 2)
+    timestamp = dic_data["timestamp"]  # (n_observations, 2)
+    deltat = dic_data["deltat"]  # (n_observations,)
+
+    # -Step 2: Initialize output matrices
+    n_nodes = ew_data.shape[1]
+    n_times = len(np.unique(np.sort(timestamp))) - 1
+
+    # --calcolo vettore deltaT
+    # ---creo vettore dei tempi dove ho un'osservazione
+    # -1) cerco valori temporali per cui ho un dato
+    Tu = np.sort(np.unique(timestamp))
+    Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
+    for i in range(len(Tu) - 1):
+        Time_hat[i, :] = [Tu[i], Tu[i + 1]]
+    DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
+
+    # -inizializzo matrici dei risultati
+    EW_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
+    NS_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
+
+    # -Step 3: Invert each node
+    logger.info(f"Starting inversion for {n_nodes} nodes...")
+    tic = time.time()
+    for node_idx in tqdm(range(n_nodes), desc="Inverting nodes"):
+        node_x = coordinates[node_idx, 0]
+        node_y = coordinates[node_idx, 1]
+
+        try:
+            # -extract data for this node
+            ew_node = ew_data[:, node_idx]
+            ns_node = ns_data[:, node_idx]
+            weight_node = weight_data[:, node_idx]
+
+            # -invert the node
+            result = invert_node(
+                ew_series=ew_node,
+                ns_series=ns_node,
+                weight_series=weight_node,
+                timestamp=timestamp,
+                node_idx=node_idx,
+                node_x=node_x,
+                node_y=node_y,
+                iterates=iterates,
+            )
+
+            # -populate results
+            if result is not None:
+                EW_hat[node_idx, :] = result["EW_hat"]
+                NS_hat[node_idx, :] = result["NS_hat"]
+
+        except Exception as e:
+            # -keep nan for this node
+            logger.warning(
+                f"Error inverting node {node_idx} at ({node_x:.1f}, {node_y:.1f}): {e}"
+            )
+
+    toc = time.time()
+    logger.info(f"Inversion completed in {(toc - tic) // 1} seconds")
+
+    # -calcolo anche il tempo medio
+    tm = timestamp[:, 0][:, None] + (deltat / 2 * 24).astype("timedelta64[h]")
+    timestamp = np.hstack((timestamp, tm))
+    TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
+    Time_hat = np.hstack((Time_hat, TM))
+
+    output = {
+        "EW_hat": EW_hat,
+        "NS_hat": NS_hat,
+        "EW_init": ew_data,
+        "NS_init": ns_data,
+        "timestamp": timestamp,
+        "deltat": deltat.squeeze(),
+        "DT_hat": DT_hat.squeeze(),
+        "Time_hat": Time_hat,
+        "coordinates": coordinates,
+    }
+
+    return output
 
 
 if __name__ == "__main__":
     # -path alle mappe di spostamento
-    source = "./data/"
-    # -path dove salvare le time series
-    destination = "./results/"
+    cwd = Path(__file__).parents[1]
+    day_dic_dir = cwd / "data/day_dic"
 
-    output = run(
-        source,
+    output = run_ts_inversion(
+        day_dic_dir=day_dic_dir,
         iterates=10,
     )
 
-    # -salvo risultati
-    save_inversion_results(output, destination, base_name="ppcx_aug2021")
-
-    #
-    # -punti da plottare
-    # -01_Jul2016-Oct2016
-    # ij = [
-    #     [1660, 2600],  # - centro ghiacciaio
-    #     [2170, 2550],  # - fronte
-    # ]
-    # # -00
-    # # ij = [ [1900, 1440],
-    # #     ]
-
-    # # -punto a cas
-    # ij = [[2560, -1088]]
-    # fplot(O, ij)
+    # Plot output of a sample point to stdout for quick verification
+    sample_idx = 100  # Change this index to plot different points
+    print("Sample point time series:")
+    print("East-West Velocity:", output["EW_hat"][sample_idx, :])
+    print("North-South Velocity:", output["NS_hat"][sample_idx, :])
