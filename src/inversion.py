@@ -75,6 +75,7 @@ def load_dic_data(day_dic_dir: Path):
 
         # -carico file
         file_data = np.loadtxt(dat_file, delimiter=",")
+        
         # -estraggo i dati: colonne sono [x, y, dx, dy, weight]
         ew_data[count, :] = file_data[:, 2]
         ns_data[count, :] = file_data[:, 3]

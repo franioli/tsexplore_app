@@ -10,7 +10,7 @@ sandbox/
 *.tmp
 *.bak
 *.swp
-*.pyrc
+*.pyc
 __pycache__/
 *.egg-info/
 .ipynb_checkpoints/

@@ -6,36 +6,31 @@ from io import BytesIO
 from typing import Any, Literal
 
 import numpy as np
-from dotenv import load_dotenv
 from PIL import Image
 from plotly import graph_objects as go
 
-load_dotenv()
+from .data import cache
 
 logger = logging.getLogger(__name__)
-
-# Global cache for the base64 image (computed once)
-_CACHED_IMAGE_DATA: dict[str, tuple[str | None, tuple[int, int] | None]] = {}
 
 
 def _get_cached_image(
     background_image_path: str | None,
+    max_dimension: int | None = None,
 ) -> tuple[str | None, tuple[int, int] | None]:
     """
     Get cached base64 image data. Only computed once per path.
     Returns (data_url, (width, height)) or (None, None).
-
-    Args:
-        background_image_path: Path to background image file
     """
     if not background_image_path:
         logger.debug("No background image path provided")
         return (None, None)
 
-    # Return cached if available
-    if background_image_path in _CACHED_IMAGE_DATA:
+    # Try cache first
+    data_url, size, raw_bytes = cache.get_image(background_image_path)
+    if data_url and size:
         logger.debug(f"Using cached image: {background_image_path}")
-        return _CACHED_IMAGE_DATA[background_image_path]
+        return data_url, size
 
     # Load and cache the image
     try:
@@ -44,8 +39,7 @@ def _get_cached_image(
         w, h = img.size
 
         # Optionally resize if too large (faster rendering)
-        max_dimension = 2048
-        if max(w, h) > max_dimension:
+        if max_dimension and (w > max_dimension or h > max_dimension):
             scale = max_dimension / max(w, h)
             new_w = int(w * scale)
             new_h = int(h * scale)
@@ -56,13 +50,14 @@ def _get_cached_image(
         bio = BytesIO()
         img.save(bio, format="PNG", optimize=True)
         bio.seek(0)
-        b64 = base64.b64encode(bio.read()).decode("ascii")
+        raw = bio.read()
+        b64 = base64.b64encode(raw).decode("ascii")
         data_url = f"data:image/png;base64,{b64}"
 
-        result = (data_url, (w, h))
-        _CACHED_IMAGE_DATA[background_image_path] = result
+        # Store in cache (metadata + raw bytes)
+        cache.store_image(background_image_path, data_url, (w, h), raw)
         logger.info(f"Cached background image: {w}x{h}, {len(b64) / 1024:.1f} KB")
-        return result
+        return data_url, (w, h)
 
     except FileNotFoundError:
         logger.warning(f"Background image file not found: {background_image_path}")
@@ -169,15 +164,17 @@ def make_velocity_map_figure(
     img_src, img_size = _get_cached_image(background_image_path)
     if img_src and img_size:
         img_w, img_h = img_size
+        x_range = [0, img_w]
+        y_range = [img_h, 0]  # top-left origin
         fig.add_layout_image(
             dict(
                 source=img_src,
                 xref="x",
                 yref="y",
-                x=0,
-                y=img_h,
-                sizex=img_w,
-                sizey=img_h,
+                x=x_range[0],
+                y=y_range[0],
+                sizex=x_range[1] - x_range[0],
+                sizey=y_range[1] - y_range[0],
                 sizing="stretch",
                 opacity=0.8,
                 layer="below",
@@ -259,14 +256,9 @@ def make_velocity_map_figure(
             )
         )
 
-    # Determine axis ranges
-    if img_size:
-        img_w, img_h = img_size
-        x_range = [0, img_w]
-        y_range = [img_h, 0]
-    else:
-        x_range = [float(np.min(x)), float(np.max(x))]
-        y_range = [float(np.max(y)), float(np.min(y))]
+    # Axis ranges: use data extents; always reverse Y for image compatibility
+    x_range = [float(np.min(x)), float(np.max(x))]
+    y_range = [float(np.min(y)), float(np.max(y))]
 
     # Build title with optional metadata
     title_text = f"Velocity Field - {units}"
@@ -302,7 +294,7 @@ def make_velocity_map_figure(
             scaleratio=1,
             showgrid=False,
         ),
-        yaxis=dict(range=y_range, showgrid=False),
+        yaxis=dict(range=y_range, autorange="min reversed", showgrid=False),
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode="pan",
         template="plotly_white",

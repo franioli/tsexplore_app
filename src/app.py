@@ -1,66 +1,35 @@
+"""FastAPI application for velocity field visualization and time series analysis."""
+
+import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal
 
 import numpy as np
-from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .config import settings
 from .data import (
     build_global_kdtree,
     format_date_for_display,
-    get_data_dir,
-    get_file_pattern,
-    get_filename_pattern,
     get_loaded_dates,
     load_all_series,
     load_day_dic,
     nearest_node,
     preload_all_data,
 )
-from .plots import (
-    make_timeseries_figure,
-    make_velocity_map_figure,
-)
-
-# Load environment variables
-load_dotenv()
+from .models import HealthCheckResponse, NearestNodeRequest, NearestNodeResponse
+from .plots import make_timeseries_figure, make_velocity_map_figure
 
 # Configure logging
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=LOG_LEVEL,
+    level=settings.log_level,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
-
-# Type aliases
-ColorscalesType = Literal["Reds", "Viridis", "Plasma", "Blues", "RdYlBu", "Turbo"]
-PlotTypesType = Literal["scatter", "raster"]
-SearchMethodsType = Literal["hybrid", "kdtree", "grid"]
-
-# Default values for API parameters
-DEFAULT_USE_VELOCITY = True
-DEFAULT_COLORSCALE = "Reds"
-DEFAULT_PLOT_TYPE = "scatter"
-DEFAULT_MARKER_SIZE = 6
-DEFAULT_MARKER_OPACITY = 0.7
-DEFAULT_DOWNSAMPLE_POINTS = 5000
-DEFAULT_MARKER_MODE = "lines+markers"
-DEFAULT_COMPONENTS = "V"
-DEFAULT_SEARCH_METHOD = "hybrid"
-DEFAULT_RADIUS = 10.0
-DEFAULT_SHOW_ERROR_BAND = False
-
-# Load configuration from environment
-BACKGROUND_IMAGE = os.getenv("BACKGROUND_IMAGE", "")
-DT_DAYS_PREFERRED = int(os.getenv("DT_DAYS_PREFERRED", "3"))
 
 
 def run_ts_inversion(
@@ -123,160 +92,154 @@ def run_ts_inversion(
     return ew_hat, ns_hat, time_hat
 
 
+# Application state class for better state management
+class AppState:
+    """Centralized application state."""
+
+    def __init__(self):
+        self.data_loaded = False
+        self.kdtree_built = False
+
+    def is_ready(self) -> bool:
+        """Check if app is ready to serve requests."""
+        return self.data_loaded and self.kdtree_built
+
+
+# Global app state
+app_state = AppState()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Preload all data on startup."""
-    logger.info("Starting application...")
-    data_dir = get_data_dir()
-    file_pattern = get_file_pattern()
-    filename_pattern = get_filename_pattern()
-
-    # Log configuration
-    if BACKGROUND_IMAGE:
-        logger.info(f"Background image configured: {BACKGROUND_IMAGE}")
-    else:
-        logger.info("No background image configured")
-
-    dt_days_preferred = DT_DAYS_PREFERRED
-    logger.info(f"Preferred dt_days for velocity calculation: {dt_days_preferred}")
+    """Application lifespan: preload data on startup."""
+    logger.info("Starting application - preloading data...")
     try:
         preload_all_data(
-            data_dir,
-            file_pattern,
-            filename_pattern,
-            dt_days_preferred=dt_days_preferred,
+            data_dir=settings.data_dir,
+            file_pattern=settings.file_pattern,
+            filename_pattern=settings.filename_pattern,
+            dt_days_preferred=settings.dt_days_preferred,
         )
-        build_global_kdtree(data_dir, file_pattern, filename_pattern)
-        logger.info("Data preloading complete!")
+        app_state.data_loaded = True
+        logger.info("Data preloaded successfully")
+
+        build_global_kdtree(
+            data_dir=settings.data_dir,
+            file_pattern=settings.file_pattern,
+            filename_pattern=settings.filename_pattern,
+        )
+        app_state.kdtree_built = True
+        logger.info("KDTree built successfully")
+
     except Exception as e:
         logger.error(f"Failed to preload data: {e}", exc_info=True)
+        raise
 
-    yield  # App runs here
+    yield
 
-    logger.info("Shutting down application...")
+    logger.info("Shutting down application")
 
 
-app = FastAPI(lifespan=lifespan)
+# Initialize FastAPI app
+app = FastAPI(
+    title="Velocity Field Time Series Viewer",
+    description="Interactive visualization of velocity fields and time series data",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
+# Mount static files and templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 
+# ===== HTML Endpoints =====
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    logger.info("Rendering index page")
-
-    try:
-        # Get the actually loaded dates from cache
-        dates_raw = get_loaded_dates()
-        if not dates_raw:
-            logger.warning("No dates loaded in cache")
-            return templates.TemplateResponse(
-                "index.html",
-                {
-                    "request": request,
-                    "dates_raw": [],
-                    "dates_display": [],
-                    "dates_iso": [],
-                },
-            )
-
-        # Convert dates to display format and create mapping
-        dates_display = []
-        dates_iso = []
-
-        for d in dates_raw:
-            dates_display.append(format_date_for_display(d))
-            dt = datetime.strptime(d, "%Y%m%d")
-            dates_iso.append(dt.strftime("%Y-%m-%d"))
-
-        logger.info(f"Found {len(dates_raw)} loaded dates")
-
-        return templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "dates_raw": dates_raw,
-                "dates_display": dates_display,
-                "dates_iso": dates_iso,
-            },
+async def root(request: Request):
+    """Serve the main HTML page."""
+    if not app_state.is_ready():
+        return HTMLResponse(
+            content="<h1>Service starting up, please wait...</h1>", status_code=503
         )
-    except Exception as e:
-        logger.error(f"Error loading dates: {e}", exc_info=True)
-        return templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "dates_raw": [],
-                "dates_display": [],
-                "dates_iso": [],
-            },
-        )
+
+    dates_raw = get_loaded_dates()  # YYYYMMDD format
+
+    # Convert to display format (DD/MM/YYYY) for user
+    dates_display = [
+        datetime.strptime(d, "%Y%m%d").strftime("%d/%m/%Y") for d in dates_raw
+    ]
+
+    # Convert dates to iso format for HTML5 date inputs (YYYY-MM-DD)
+    dates_display_iso = [
+        datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
+    ]
+
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "dates_raw": dates_raw,
+            "dates_display": dates_display,
+            "dates_iso": dates_display_iso,
+            "background_image": settings.background_image,
+        },
+    )
 
 
 @app.get("/api/dates")
 async def api_dates():
-    """Return available dates in multiple formats (only actually loaded dates)."""
-    dates_raw = get_loaded_dates()
-
-    dates_info = []
-    for d in dates_raw:
-        dates_info.append(
-            {
-                "raw": d,
-                "display": format_date_for_display(d),
-                "iso": datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d"),
-            }
-        )
-
-    return JSONResponse(dates_info)
+    """Get list of available dates."""
+    dates = get_loaded_dates()
+    return JSONResponse({"dates": dates})
 
 
 @app.get("/api/velocity-map")
 async def api_velocity_map(
-    date: str,
-    use_velocity: bool = DEFAULT_USE_VELOCITY,
-    cmin: float | None = None,
-    cmax: float | None = None,
-    colorscale: ColorscalesType = DEFAULT_COLORSCALE,
-    plot_type: PlotTypesType = DEFAULT_PLOT_TYPE,
-    marker_size: int = DEFAULT_MARKER_SIZE,
-    marker_opacity: float = DEFAULT_MARKER_OPACITY,
-    downsample_points: int = DEFAULT_DOWNSAMPLE_POINTS,
-    selected_x: float | None = None,
-    selected_y: float | None = None,
-    background_image_path: str = BACKGROUND_IMAGE,
+    date: str = Query(..., description="Date in YYYYMMDD format"),
+    use_velocity: bool = Query(True),
+    cmin: float | None = Query(None, ge=0),
+    cmax: float | None = Query(None, ge=0),
+    colorscale: str = Query(settings.default_colorscale),
+    plot_type: str = Query(settings.default_plot_type),
+    marker_size: int = Query(settings.default_marker_size, ge=1, le=20),
+    marker_opacity: float = Query(settings.default_marker_opacity, ge=0, le=1),
+    downsample_points: int = Query(settings.default_downsample_points, ge=100),
+    selected_x: float | None = Query(None),
+    selected_y: float | None = Query(None),
 ):
-    logger.info(f"API /velocity map - date={date}, use_velocity={use_velocity}")
+    """Velocity map endpoint."""
+    logger.info(f"API /velocity-map - date={date}, use_velocity={use_velocity}")
+
     if plot_type not in {"scatter", "raster"}:
         logger.warning(f"Invalid plot_type '{plot_type}', defaulting to 'scatter'")
         plot_type = "scatter"
 
-    data_dir = get_data_dir()
-    file_pattern = get_file_pattern()
-    filename_pattern = get_filename_pattern()
-
     try:
         # Load raw data (has both displacement and velocity precomputed)
-        raw_data = load_day_dic(data_dir, date, file_pattern, filename_pattern)
+        raw_data = load_day_dic(
+            settings.data_dir,
+            date,
+            settings.file_pattern,
+            settings.filename_pattern,
+        )
 
         # Select which data to plot based on flag
         x = raw_data["x"]
         y = raw_data["y"]
         dt_days = raw_data.get("dt_days", None)
-        ensable_nmad = raw_data.get("nmad", None)  # Not used currently
+        # ensable_nmad = raw_data.get("nmad", None)  # Not used currently
 
         if use_velocity:
             logger.debug("Selected velocity data for plotting")
             mag = raw_data["V"]
-            u_comp = raw_data["u"]  # Not used currently
-            v_comp = raw_data["v"]  # Not used currently
+            # u_comp = raw_data["u"]  # Not used currently
+            # v_comp = raw_data["v"]  # Not used currently
             units = "velocity (px/day)"
         else:
             logger.debug("Selected displacement data for plotting")
             mag = raw_data["disp_mag"]
-            u_comp = raw_data["dx"]  # Not used currently
-            v_comp = raw_data["dy"]  # Not used currently
+            # u_comp = raw_data["dx"]  # Not used currently
+            # v_comp = raw_data["dy"]  # Not used currently
             units = "displacement (px)"
 
         # Prepare selected node if provided
@@ -294,7 +257,6 @@ async def api_velocity_map(
             "Min |v|": float(np.min(mag)),
             "Max |v|": float(np.max(mag)),
         }
-
         # Create the velocity map figure
         fig = make_velocity_map_figure(
             x=x,
@@ -310,9 +272,10 @@ async def api_velocity_map(
             downsample_points=downsample_points,
             selected_node=selected_node,
             units=units,
-            background_image_path=background_image_path,
+            background_image_path=settings.background_image,
             metadata=metadata,
         )
+
         logger.info("velocity map plot created successfully")
         return JSONResponse(fig.to_dict())
 
@@ -328,52 +291,49 @@ async def api_velocity_map(
 async def api_timeseries(
     node_x: float,
     node_y: float,
-    use_velocity: bool = DEFAULT_USE_VELOCITY,
-    components: str = DEFAULT_COMPONENTS,
-    marker_mode: str = DEFAULT_MARKER_MODE,
+    use_velocity: bool = True,
+    components: str = "V",
+    marker_mode: str = "lines+markers",
     xmin_date: str | None = None,
     xmax_date: str | None = None,
     ymin: float | None = None,
     ymax: float | None = None,
-    show_error_band: bool = DEFAULT_SHOW_ERROR_BAND,
+    show_error_band: bool = False,
     ts_inversion: bool = False,
 ):
+    """Time series endpoint."""
     logger.info(
-        f"API /timeseries - node=({node_x}, {node_y}), use_velocity={use_velocity}, "
-        f"show_error_band={show_error_band}, ts_inversion={ts_inversion}"
+        f"API /timeseries - node=({node_x}, {node_y}), use_velocity={use_velocity}"
     )
-    data_dir = get_data_dir()
-    file_pattern = get_file_pattern()
-    filename_pattern = get_filename_pattern()
 
     try:
         # Load time series for the node
         ts = load_all_series(
-            data_dir, file_pattern, filename_pattern, node_x=node_x, node_y=node_y
+            settings.data_dir,
+            settings.file_pattern,
+            settings.filename_pattern,
+            node_x=node_x,
+            node_y=node_y,
         )
+
         if not ts["dates"]:
             logger.warning("No data found for time series")
-            return JSONResponse(
-                {"error": "No data found for this node"}, status_code=404
-            )
+            raise HTTPException(status_code=404, detail="No data found for this node")
 
-        # Convert dates to Plotly-compatible format (YYYY-MM-DD)
-        dates = ts["dates"]
-        dates = [datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates]
+        # Convert dates to datetime objects
+        dates = [datetime.strptime(d, "%Y%m%d") for d in ts["dates"]]
 
-        # Select which data to plot based on flag
+        # Select which data to plot
         comp_list = [c.strip() for c in components.split(",")]
         if use_velocity:
-            logger.debug("Selected velocity data for time series")
-            u = ts["u"]
-            v = ts["v"]
-            V = ts["V"]
+            u = np.array(ts["u"])
+            v = np.array(ts["v"])
+            V = np.array(ts["V"])
             y_label = "Velocity (px/day)"
         else:
-            logger.debug("Selected displacement data for time series")
-            u = ts["dx"]
-            v = ts["dy"]
-            V = ts["disp_mag"]
+            u = np.array(ts["dx"])
+            v = np.array(ts["dy"])
+            V = np.array(ts["disp_mag"])
             y_label = "Displacement (px)"
 
         # Build metadata
@@ -397,41 +357,18 @@ async def api_timeseries(
         # Prepare node coordinates
         node_coords = {"x": node_x, "y": node_y}
 
-        # If TS inversion flag is set, run the procedure
-        if ts_inversion:
-            # try:
-            inversion_results = run_ts_inversion(
-                data_dir,
-                file_pattern,
-                filename_pattern,
-                node_x,
-                node_y,
-            )
-            ew_hat, ns_hat, time_hat = inversion_results
-
-            # Extract inversion dates and magnitude
-            # Note: time_hat has shape (n_inverted, 3)
-            # time_hat[:, 0] is start date, time_hat[:, 1] is end date
-            # time_hat[:, 2] is mid date
-            date_to_use = time_hat[:, 1]
-            dates_inv = [np.datetime_as_string(t, unit="D") for t in date_to_use]
-            V_inv = np.sqrt(ew_hat**2 + ns_hat**2)
-
-        else:
-            dates_inv, V_inv = None, None
-
-        # Create base figure with original DIC data
+        # Create figure
         fig = make_timeseries_figure(
             dates=dates,
-            u=np.array(u),
-            v=np.array(v),
-            V=np.array(V),
+            u=u,
+            v=v,
+            V=V,
             u_std=u_std,
             v_std=v_std,
             V_std=V_std,
             components=comp_list,
             marker_mode=marker_mode,
-            node_coords=node_coords,
+            node_coords={"x": node_x, "y": node_y},
             y_label=y_label,
             xmin_date=xmin_date,
             xmax_date=xmax_date,
@@ -440,98 +377,143 @@ async def api_timeseries(
             metadata=metadata,
         )
 
-        # Choose which function to call based on inversion results
-        if ts_inversion and dates_inv is not None and V_inv is not None:
-            from plotly import graph_objects as go
+        # Add inversion trace if requested
+        if ts_inversion:
+            logger.info("Running time series inversion...")
+            try:
+                from plotly import graph_objects as go
 
-            logger.info("Adding inversion trace to plot")
-            fig.add_trace(
-                go.Scattergl(
-                    x=dates_inv,
-                    y=V_inv,
-                    mode="lines+markers",
-                    name="|v| (Inverted)",
-                    line=dict(
-                        color="darkred",
-                        width=2,
-                    ),
-                    marker=dict(size=6, symbol="diamond"),
-                    hovertemplate="<b>Inverted |v|</b><br>Date: %{x}<br>Velocity: %{y:.3f} px/day<extra></extra>",
+                from .inversion import invert_node2, load_dic_data
+
+                # Load DIC data and run inversion
+                dic_data = load_dic_data(settings.data_dir)
+                tree, coords = build_global_kdtree(
+                    settings.data_dir,
+                    settings.file_pattern,
+                    settings.filename_pattern,
                 )
-            )
+                dist, node_idx = tree.query([node_x, node_y], k=1)
+                if not np.isfinite(dist):
+                    raise ValueError(f"Could not locate node at ({node_x}, {node_y})")
 
-            # Update legend
-            fig.update_layout(
-                legend=dict(orientation="h", y=1.02, x=1, xanchor="right")
-            )
+                # Extract node data
+                ew_series = dic_data["ew"][:, node_idx]
+                ns_series = dic_data["ns"][:, node_idx]
+                ensamble_mad = dic_data["weight"][:, node_idx]
+                timestamp = dic_data["timestamp"]
+
+                # Run inversion
+                inv_results = invert_node2(
+                    ew_series=ew_series,
+                    ns_series=ns_series,
+                    timestamp=timestamp,
+                    node_idx=node_idx,
+                    node_x=coords[node_idx, 0],
+                    node_y=coords[node_idx, 1],
+                    weight_method="variable",
+                    weight_variable=ensamble_mad,
+                    regularization_method="laplacian",
+                    lambda_scaling=1.0,
+                    iterates=10,
+                )
+
+                if inv_results:
+                    ew_hat = inv_results["EW_hat"]
+                    ns_hat = inv_results["NS_hat"]
+                    time_hat = inv_results["Time_hat"]
+
+                    dates_inv = [
+                        np.datetime_as_string(t, unit="D") for t in time_hat[:, 1]
+                    ]
+                    V_inv = np.sqrt(ew_hat**2 + ns_hat**2)
+
+                    fig.add_trace(
+                        go.Scattergl(
+                            x=dates_inv,
+                            y=V_inv,
+                            mode="lines+markers",
+                            name="|v| (Inverted)",
+                            line=dict(color="darkred", width=2),
+                            marker=dict(size=6, symbol="diamond"),
+                        )
+                    )
+
+            except Exception as e:
+                logger.error(f"Inversion failed: {e}", exc_info=True)
+                # Continue without inversion trace
 
         logger.info("Time series plot created successfully")
-        return JSONResponse(fig.to_dict())
 
+        return JSONResponse(json.loads(fig.to_json()))
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating time series: {e}", exc_info=True)
-        return JSONResponse({"error": "Internal server error"}, status_code=500)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/nearest")
+@app.get("/api/nearest", response_model=NearestNodeResponse)
 async def api_nearest(
-    date: str,
-    x: float,
-    y: float,
-    radius: float = DEFAULT_RADIUS,
-    method: SearchMethodsType = DEFAULT_SEARCH_METHOD,
+    date: str = Query(...),
+    x: float = Query(...),
+    y: float = Query(...),
+    radius: float = Query(10.0, ge=0, le=1000),
+    method: str = Query("hybrid"),
 ):
+    """Find nearest node."""
+    # Validate request
+    request_data = NearestNodeRequest(date=date, x=x, y=y, radius=radius, method=method)
+
     logger.info(
         f"API /nearest - date={date}, x={x}, y={y}, radius={radius}, method={method}"
     )
-    data_dir = get_data_dir()
-    file_pattern = get_file_pattern()
-    filename_pattern = get_filename_pattern()
-
     try:
         node = nearest_node(
-            data_dir,
-            file_pattern,
-            filename_pattern,
-            date,
-            x,
-            y,
+            x=x,
+            y=y,
+            date=date,
+            data_dir=settings.data_dir,
+            file_pattern=settings.file_pattern,
+            filename_pattern=settings.filename_pattern,
             radius=radius,
-            method=method,  # Pass the method explicitly
+            method=method,
         )
 
         if node is None:
             logger.warning(f"No node found within radius {radius}")
-            return JSONResponse({"error": "No node within radius"}, status_code=404)
+            raise HTTPException(status_code=404, detail="No node within radius")
 
         logger.info(f"Found nearest node: ({node['x']:.2f}, {node['y']:.2f})")
-        return JSONResponse({"x": float(node["x"]), "y": float(node["y"])})
+        return NearestNodeResponse(x=float(node["x"]), y=float(node["y"]))
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error finding nearest node: {e}", exc_info=True)
-        return JSONResponse({"error": "Internal server error"}, status_code=500)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.post("/api/smooth")
-async def api_smooth():
-    logger.info("API /smooth called (not implemented)")
-    return JSONResponse({"status": "not_implemented"})
-
-
-# health check endpoint
-@app.get("/api/health")
+@app.get("/api/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Check if data is loaded and ready."""
-    from .data import _ALL_DATA_CACHE, _KDTREE_CACHE
+    """Health check endpoint."""
+    from .data import cache
 
-    status = {
-        "status": "healthy",
-        "data_loaded": _ALL_DATA_CACHE is not None,
-        "kdtree_built": _KDTREE_CACHE is not None,
-    }
+    return HealthCheckResponse(
+        status="healthy" if app_state.is_ready() else "starting",
+        data_loaded=cache.is_loaded(),
+        kdtree_built=cache.has_kdtree(),
+        num_dates=cache.num_dates,
+    )
 
-    if _ALL_DATA_CACHE:
-        status["num_dates"] = len(_ALL_DATA_CACHE)
 
-    logger.debug(f"Health check: {status}")
-    return JSONResponse(status)
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        log_level=settings.log_level.lower(),
+    )
