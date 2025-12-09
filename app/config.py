@@ -14,6 +14,8 @@ class Settings(BaseSettings):
         extra="ignore",  # Ignore extra fields from .env
     )
 
+    serve_ui: bool = True  # if False FastAPI will not register the HTML UI routes
+
     # Data paths
     data_dir: Path = Path("./data/day_dic")
     file_pattern: str = "*.txt"  # glob pattern to match data files # TODO: avoid ambiguity with filename_pattern

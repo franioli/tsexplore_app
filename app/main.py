@@ -83,37 +83,35 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
 
-# ===== HTML Endpoints =====
-@app.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    """Serve the main HTML page."""
-    if not app_state.is_ready():
-        return HTMLResponse(
-            content="<h1>Service starting up, please wait...</h1>", status_code=503
-        )
+# Serve HTML UI if enabled in settings
+if settings.serve_ui:
 
-    dates_raw = get_loaded_dates()  # YYYYMMDD format
+    @app.get("/", response_class=HTMLResponse)
+    async def root(request: Request):
+        """Serve the main HTML page (only when serve_ui is True)."""
+        if not app_state.is_ready():
+            return HTMLResponse(
+                "<h1>Service starting up, please wait...</h1>", status_code=503
+            )
 
-    # Convert to display format (DD/MM/YYYY) for user
-    dates_display = [
-        datetime.strptime(d, "%Y%m%d").strftime("%d/%m/%Y") for d in dates_raw
-    ]
+        dates_raw = get_loaded_dates()
+        dates_display = [
+            datetime.strptime(d, "%Y%m%d").strftime("%d/%m/%Y") for d in dates_raw
+        ]
+        dates_display_iso = [
+            datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
+        ]
 
-    # Convert dates to iso format for HTML5 date inputs (YYYY-MM-DD)
-    dates_display_iso = [
-        datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
-    ]
-
-    return templates.TemplateResponse(
-        "index.html",
-        {
-            "request": request,
-            "dates_raw": dates_raw,
-            "dates_display": dates_display,
-            "dates_iso": dates_display_iso,
-            "background_image": settings.background_image,
-        },
-    )
+        return templates.TemplateResponse(
+            "index.html",
+            {
+                "request": request,
+                "dates_raw": dates_raw,
+                "dates_display": dates_display,
+                "dates_iso": dates_display_iso,
+                "background_image": settings.background_image,
+            },
+        )s
 
 
 if __name__ == "__main__":
