@@ -15,16 +15,22 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ```bash
 # Clone or navigate to the repository
-cd ts_inversion_app
+cd tsexplore_app
 
 # Create virtual environment and install dependencies
-uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e .
-
-# For development (includes testing tools)
-uv pip install -e ".[dev]"
+uv venv  .venv             # create .venv managed by uv
+source .venv/bin/activate  # Activate the environment (On Windows: .venv\Scripts\activate)
+uv sync --locked           # install dependencies
 ```
+
+### Install in development mode
+
+For development, install extra dependencies and omit `--locked` flag (keep editable installs so code changes reflect immediately):
+
+```bash
+uv sync --dev
+```
+
 
 ## Configuration
 
@@ -41,7 +47,7 @@ Edit `.env` with your data paths and settings.
 Run the server:
 
 ```bash
-uv run uvicorn src.main:app --reload --port 8000
+uv run uvicorn src.app:app --reload --port 8000
 ```
 
 Open your browser at: `http://localhost:8000`
