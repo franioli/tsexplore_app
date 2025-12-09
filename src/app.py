@@ -1,7 +1,6 @@
 """FastAPI application for velocity field visualization and time series analysis."""
 
 import json
-import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -11,7 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import settings
+from .config import get_logger, get_settings
 from .data import (
     build_global_kdtree,
     format_date_for_display,
@@ -24,12 +23,8 @@ from .data import (
 from .models import HealthCheckResponse, NearestNodeRequest, NearestNodeResponse
 from .plots import make_timeseries_figure, make_velocity_map_figure
 
-# Configure logging
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+settings = get_settings()
+logger = get_logger()
 
 
 def run_ts_inversion(
@@ -273,6 +268,7 @@ async def api_velocity_map(
             selected_node=selected_node,
             units=units,
             background_image_path=settings.background_image,
+            background_opacity=settings.background_image_opacity,
             metadata=metadata,
         )
 

@@ -10,10 +10,12 @@ from typing import Any, Literal
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .config import settings
+from .config import get_settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 
 ###=== Data Cache Manager ===###

@@ -28,8 +28,8 @@ class VelocityMapRequest(BaseModel):
         try:
             datetime.strptime(v, "%Y%m%d")
             return v
-        except ValueError:
-            raise ValueError("Date must be in YYYYMMDD format")
+        except ValueError as e:
+            raise ValueError("Date must be in YYYYMMDD format") from e
 
 
 class TimeSeriesRequest(BaseModel):

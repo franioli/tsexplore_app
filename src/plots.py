@@ -21,6 +21,8 @@ def _get_cached_image(
     """
     Get cached base64 image data. Only computed once per path.
     Returns (data_url, (width, height)) or (None, None).
+
+    The image can be optionally downscaled (max_dimension) to speed up plotting.
     """
     if not background_image_path:
         logger.debug("No background image path provided")
@@ -38,7 +40,7 @@ def _get_cached_image(
         img = Image.open(background_image_path)
         w, h = img.size
 
-        # Optionally resize if too large (faster rendering)
+        # Downscale for speed if too large
         if max_dimension and (w > max_dimension or h > max_dimension):
             scale = max_dimension / max(w, h)
             new_w = int(w * scale)
@@ -91,9 +93,6 @@ def _create_raster_grid(x, y, values):
     return Xi, Yi, Zi
 
 
-# ...existing imports...
-
-
 def make_velocity_map_figure(
     x: np.ndarray,
     y: np.ndarray,
@@ -103,12 +102,13 @@ def make_velocity_map_figure(
     cmin: float | None = None,
     cmax: float | None = None,
     colorscale: str = "Viridis",
-    marker_size: int = 6,
-    marker_opacity: float = 0.7,
+    marker_size: int = 4,
+    marker_opacity: float = 1.0,
     downsample_points: int = 5000,
     selected_node: dict[str, float] | None = None,
     units: str = "velocity (px/day)",
     background_image_path: str | None = None,
+    background_opacity: float = 1.0,
     metadata: dict[str, Any] | None = None,
 ) -> go.Figure:
     """
@@ -160,23 +160,22 @@ def make_velocity_map_figure(
             "Standard deviation visualization not implemented in this version"
         )
 
-    # Use cached image
-    img_src, img_size = _get_cached_image(background_image_path)
+    # Optional cached background image (downscaled for speed, stretched to data extents)
+    img_src, img_size = _get_cached_image(background_image_path, max_dimension=2048)
+    x_min, x_max = float(np.min(x)), float(np.max(x))
+    y_min, y_max = float(np.min(y)), float(np.max(y))
     if img_src and img_size:
-        img_w, img_h = img_size
-        x_range = [0, img_w]
-        y_range = [img_h, 0]  # top-left origin
         fig.add_layout_image(
             dict(
                 source=img_src,
                 xref="x",
                 yref="y",
-                x=x_range[0],
-                y=y_range[0],
-                sizex=x_range[1] - x_range[0],
-                sizey=y_range[1] - y_range[0],
+                x=x_min,
+                y=y_max,  # top-left corner (y is reversed)
+                sizex=x_max - x_min,
+                sizey=y_max - y_min,
                 sizing="stretch",
-                opacity=0.8,
+                opacity=background_opacity,
                 layer="below",
             )
         )
@@ -256,10 +255,6 @@ def make_velocity_map_figure(
             )
         )
 
-    # Axis ranges: use data extents; always reverse Y for image compatibility
-    x_range = [float(np.min(x)), float(np.max(x))]
-    y_range = [float(np.min(y)), float(np.max(y))]
-
     # Build title with optional metadata
     title_text = f"Velocity Field - {units}"
 
@@ -285,6 +280,9 @@ def make_velocity_map_figure(
             align="left",
         )
 
+    # Axis ranges: full data extents; always reverse Y for image compatibility
+    x_range = [x_min, x_max]
+    y_range = [y_min, y_max]
     fig.update_layout(
         title=dict(text=title_text, font=dict(size=16)),
         xaxis=dict(
