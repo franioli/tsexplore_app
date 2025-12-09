@@ -111,7 +111,7 @@ if settings.serve_ui:
                 "dates_iso": dates_display_iso,
                 "background_image": settings.background_image,
             },
-        )s
+        )
 
 
 if __name__ == "__main__":

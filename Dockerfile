@@ -19,9 +19,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # copy app sources into /app and install the project into the created venv (editable by default). 
 COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync
+    uv sync --frozen
 
 EXPOSE 8000
 
 # default run command — use `--reload` during development by overriding CMD in docker run/compose
-CMD ["uv","--active", "run", "uvicorn src.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn app.main:app", "--host", "0.0.0.0", "--port", "8000"]

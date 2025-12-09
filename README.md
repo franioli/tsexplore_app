@@ -47,7 +47,7 @@ Edit `.env` with your data paths and settings.
 Run the server:
 
 ```bash
-uv run uvicorn src.app:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8000
 ```
 
 Open your browser at: `http://localhost:8000`
