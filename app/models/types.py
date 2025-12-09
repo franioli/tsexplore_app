@@ -32,6 +32,23 @@ class VelocityMapRequest(BaseModel):
             raise ValueError("Date must be in YYYYMMDD format") from e
 
 
+class PlotlyFigure(BaseModel):
+    """Simple wrapper for Plotly figure dictionaries."""
+
+    fig: dict = Field(..., description="Plotly figure as dict")
+
+
+class VelocityMapResponse(BaseModel):
+    """Response model for /map endpoints."""
+
+    ok: bool = True
+    date: str
+    use_velocity: bool
+    n_points: int | None = None
+    figure: dict | None = None  # plotly fig dict
+    meta: dict | None = None
+
+
 class TimeSeriesRequest(BaseModel):
     """Request model for time series endpoint."""
 
@@ -55,6 +72,51 @@ class TimeSeriesRequest(BaseModel):
         parts = [c.strip() for c in v.split(",")]
         if not all(c in valid for c in parts):
             raise ValueError(f"Components must be from: {valid}")
+        return v
+
+
+class TimeSeriesPoint(BaseModel):
+    """Single point in a timeseries."""
+
+    date: str  # YYYYMMDD
+    u: float | None = None
+    v: float | None = None
+    V: float | None = None
+    u_std: float | None = None
+    v_std: float | None = None
+    V_std: float | None = None
+
+
+class InversionResult(BaseModel):
+    """Compact inversion result bundle for a node."""
+
+    dates_inv: list[str]  # YYYYMMDD
+    EW_hat: list[float]
+    NS_hat: list[float]
+    V_inv: list[float]
+
+
+class TimeSeriesResponse(BaseModel):
+    """Response model for /timeseries endpoints."""
+
+    node_x: float
+    node_y: float
+    ok: bool = True
+    dates: list[str]  # original dates (YYYYMMDD)
+    series: list[TimeSeriesPoint]  # raw series values per-date
+    figure: dict | None = None  # optional plotly dict
+    inversion: InversionResult | None = None
+    meta: dict | None = None
+
+    @field_validator("dates")
+    @classmethod
+    def validate_dates(cls, v: list[str]) -> list[str]:
+        """Ensure dates are YYYYMMDD formatted strings."""
+        for d in v:
+            try:
+                datetime.strptime(d, "%Y%m%d")
+            except ValueError:
+                raise ValueError("Dates must be list of strings in YYYYMMDD format")
         return v
 
 
@@ -100,3 +162,7 @@ class HealthCheckResponse(BaseModel):
     data_loaded: bool
     kdtree_built: bool
     num_dates: int | None = None
+
+
+class ErrorResponse(BaseModel):
+    error: str

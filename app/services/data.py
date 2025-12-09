@@ -3,108 +3,20 @@
 import logging
 import re
 from datetime import datetime
-from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 from scipy.spatial import cKDTree  # type: ignore
 
 from ..cache import cache
 from ..config import get_settings
+from .spatial import (
+    nearest_node_grid,
+    nearest_node_kdtree,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-
-logger.info(
-    f"Data module initialized: data_dir={settings.data_dir}, "
-    f"file_pattern={settings.file_pattern}, invert_y={settings.invert_y}"
-)
-
-
-###=== Utility Functions ===###
-@lru_cache(maxsize=128)
-def _get_compiled_pattern(pattern: str) -> re.Pattern:
-    """Cache compiled regex patterns."""
-    return re.compile(pattern)
-
-
-def get_loaded_dates() -> list[str]:
-    """Get the list of actually loaded dates from the preloaded data."""
-    if cache.all_data is None:
-        return []
-    return sorted(cache.all_data.keys())
-
-
-def format_date_for_display(
-    date_str: str, input_format: str = "%Y%m%d", output_format: str = "%d/%m/%Y"
-) -> str:
-    """Convert date string from one format to another."""
-    try:
-        dt = datetime.strptime(date_str, input_format)
-        return dt.strftime(output_format)
-    except Exception:
-        return date_str
-
-
-def parse_display_date(
-    display_date: str, input_format: str = "%d/%m/%Y", output_format: str = "%Y%m%d"
-) -> str:
-    """Convert display date back to storage format."""
-    try:
-        dt = datetime.strptime(display_date, input_format)
-        return dt.strftime(output_format)
-    except Exception:
-        return display_date
-
-
-def parse_dic_filename(
-    file_path: Path, pattern: str | None = None
-) -> tuple[datetime, datetime]:
-    """
-    Parse DIC filename using regex pattern.
-
-    Args:
-        file_path: Path to the DIC file
-        pattern: Regex pattern with two capture groups for slave and master dates.
-
-    Returns:
-        Tuple of (slave_date, master_date)
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If filename doesn't match pattern or dates can't be parsed
-    """
-    if not file_path.exists():
-        raise FileNotFoundError(f"DIC filename {file_path} does not exist")
-
-    if pattern is None:
-        pattern = settings.filename_pattern
-    compiled_pattern = _get_compiled_pattern(pattern)
-
-    try:
-        match = compiled_pattern.search(file_path.name)
-        if not match:
-            raise ValueError(
-                f"Filename {file_path.name} does not match pattern {pattern or pattern}"
-            )
-
-        if len(match.groups()) < 2:
-            raise ValueError(
-                f"Pattern must have at least 2 capture groups, got {len(match.groups())}"
-            )
-
-        slave_str = match.group(1)
-        master_str = match.group(2)
-
-        slave_datetime = datetime.strptime(slave_str, settings.date_format)
-        master_datetime = datetime.strptime(master_str, settings.date_format)
-
-    except Exception as e:
-        raise ValueError(f"Failed to parse DIC filename {file_path.name}") from e
-
-    return (slave_datetime, master_datetime)
 
 
 ###=== Reading DIC Files ===###
@@ -171,6 +83,108 @@ def read_dic_file(
     except Exception as e:
         logger.error(f"Failed to read DIC file {dic_file}: {e}")
         raise ValueError(f"Failed to read DIC file: {dic_file}") from e
+
+
+def load_day_dic(
+    data_dir: Path,
+    date: str,
+    file_pattern: str = "*.txt",
+    filename_pattern: str | None = None,
+) -> dict:
+    """
+    Fast version that uses preloaded data cache.
+
+    Args:
+        data_dir: Path to data directory
+        date: Date string in YYYYMMDD format
+        file_pattern: File pattern for DIC files
+        filename_pattern: Pattern to extract date from filename
+
+    Returns:
+        Dictionary with DIC data for the specified date
+    """
+    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
+
+    if date not in all_data:
+        logger.error(f"No data for date {date}")
+        raise FileNotFoundError(f"No data for date {date}")
+
+    return all_data[date]
+
+
+def load_all_series(
+    data_dir: Path,
+    file_pattern: str | None = None,
+    filename_pattern: str | None = None,
+    node_x: float | None = None,
+    node_y: float | None = None,
+) -> dict:
+    """
+    Fast time series extraction using preloaded data and KDTree.
+
+    Args:
+        data_dir: Path to data directory (uses settings if None)
+        file_pattern: File pattern for DIC files (uses settings if None)
+        filename_pattern: Pattern to extract dates from filename (uses settings if None)
+        node_x: X coordinate of the node
+        node_y: Y coordinate of the node
+
+    Returns:
+        Dictionary with time series data
+    """
+    logger.info(f"Loading time series for node ({node_x}, {node_y})")
+
+    if file_pattern is None:
+        file_pattern = settings.file_pattern
+
+    if filename_pattern is None:
+        filename_pattern = settings.filename_pattern
+
+    # Build KDTree and preload all data
+    tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
+    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
+
+    # Find the nearest node index once
+    dist, idx = tree.query([node_x, node_y], k=1)
+
+    # Initialize result dictionary
+    result = {
+        "dates": [],
+        "dt_hours": [],
+        "dt_days": [],
+        "dx": [],
+        "dy": [],
+        "disp_mag": [],
+        "u": [],
+        "v": [],
+        "V": [],
+        "ensamble_mad": [],
+    }
+
+    if not np.isfinite(dist):
+        logger.warning(f"No valid node found for ({node_x}, {node_y})")
+        return result
+
+    # Extract time series for this index across all dates
+    for date in sorted(all_data.keys()):
+        data = all_data[date]
+        result["dates"].append(date)
+        result["dt_hours"].append(int(data["dt_hours"]))
+        result["dt_days"].append(int(data["dt_days"]))
+        result["dx"].append(float(data["dx"][idx]))
+        result["dy"].append(float(data["dy"][idx]))
+        result["disp_mag"].append(float(data["disp_mag"][idx]))
+        result["u"].append(float(data["u"][idx]))
+        result["v"].append(float(data["v"][idx]))
+        result["V"].append(float(data["V"][idx]))
+        result["ensamble_mad"].append(float(data["ensamble_mad"][idx]))
+
+    logger.info(
+        f"Loaded time series with {len(result['dates'])} points for node at "
+        f"({coords[idx][0]:.1f}, {coords[idx][1]:.1f}), distance={dist:.2f}px"
+    )
+
+    return result
 
 
 def preload_all_data(
@@ -313,109 +327,38 @@ def preload_all_data(
     return all_data
 
 
-def load_day_dic(
-    data_dir: Path,
-    date: str,
-    file_pattern: str = "*.txt",
-    filename_pattern: str | None = None,
-) -> dict:
-    """
-    Fast version that uses preloaded data cache.
-
-    Args:
-        data_dir: Path to data directory
-        date: Date string in YYYYMMDD format
-        file_pattern: File pattern for DIC files
-        filename_pattern: Pattern to extract date from filename
-
-    Returns:
-        Dictionary with DIC data for the specified date
-    """
-    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
-
-    if date not in all_data:
-        logger.error(f"No data for date {date}")
-        raise FileNotFoundError(f"No data for date {date}")
-
-    return all_data[date]
+###=== Spatial Indexing
 
 
-def load_all_series(
-    data_dir: Path,
+def build_global_kdtree(
+    data_dir: Path | None = None,
     file_pattern: str | None = None,
     filename_pattern: str | None = None,
-    node_x: float | None = None,
-    node_y: float | None = None,
-) -> dict:
-    """
-    Fast time series extraction using preloaded data and KDTree.
+) -> tuple[cKDTree, np.ndarray]:
+    """Build a KDTree from the first available date's coordinates."""
+    if cache.kdtree is not None:
+        logger.debug("Using cached KDTree")
+        return cache.kdtree
 
-    Args:
-        data_dir: Path to data directory (uses settings if None)
-        file_pattern: File pattern for DIC files (uses settings if None)
-        filename_pattern: Pattern to extract dates from filename (uses settings if None)
-        node_x: X coordinate of the node
-        node_y: Y coordinate of the node
-
-    Returns:
-        Dictionary with time series data
-    """
-    logger.info(f"Loading time series for node ({node_x}, {node_y})")
-
-    if file_pattern is None:
-        file_pattern = settings.file_pattern
-
-    if filename_pattern is None:
-        filename_pattern = settings.filename_pattern
-
-    # Build KDTree and preload all data
-    tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
     all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
 
-    # Find the nearest node index once
-    dist, idx = tree.query([node_x, node_y], k=1)
+    if not all_data:
+        raise ValueError("No data available to build KDTree")
 
-    # Initialize result dictionary
-    result = {
-        "dates": [],
-        "dt_hours": [],
-        "dt_days": [],
-        "dx": [],
-        "dy": [],
-        "disp_mag": [],
-        "u": [],
-        "v": [],
-        "V": [],
-        "ensamble_mad": [],
-    }
+    first_date = next(iter(all_data.keys()))
+    first_data = all_data[first_date]
 
-    if not np.isfinite(dist):
-        logger.warning(f"No valid node found for ({node_x}, {node_y})")
-        return result
+    coords = np.column_stack([first_data["x"], first_data["y"]])
 
-    # Extract time series for this index across all dates
-    for date in sorted(all_data.keys()):
-        data = all_data[date]
-        result["dates"].append(date)
-        result["dt_hours"].append(int(data["dt_hours"]))
-        result["dt_days"].append(int(data["dt_days"]))
-        result["dx"].append(float(data["dx"][idx]))
-        result["dy"].append(float(data["dy"][idx]))
-        result["disp_mag"].append(float(data["disp_mag"][idx]))
-        result["u"].append(float(data["u"][idx]))
-        result["v"].append(float(data["v"][idx]))
-        result["V"].append(float(data["V"][idx]))
-        result["ensamble_mad"].append(float(data["ensamble_mad"][idx]))
+    # Optimize leafsize for data size
+    leafsize = max(10, len(coords) // 1000)
+    tree = cKDTree(coords, leafsize=leafsize, compact_nodes=True, balanced_tree=True)
 
-    logger.info(
-        f"Loaded time series with {len(result['dates'])} points for node at "
-        f"({coords[idx][0]:.1f}, {coords[idx][1]:.1f}), distance={dist:.2f}px"
-    )
-
-    return result
+    logger.info(f"Built optimized KDTree with {len(coords)} nodes, leafsize={leafsize}")
+    cache.kdtree = (tree, coords)
+    return tree, coords
 
 
-###=== Spatial Indexing for Nearest Neighbor Search ===###
 def build_grid_index(
     data_dir: Path,
     file_pattern: str,
@@ -479,133 +422,6 @@ def build_grid_index(
     return grid_cache
 
 
-def build_global_kdtree(
-    data_dir: Path | None = None,
-    file_pattern: str | None = None,
-    filename_pattern: str | None = None,
-) -> tuple[cKDTree, np.ndarray]:
-    """Build a KDTree from the first available date's coordinates."""
-    if cache.kdtree is not None:
-        logger.debug("Using cached KDTree")
-        return cache.kdtree
-
-    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
-
-    if not all_data:
-        raise ValueError("No data available to build KDTree")
-
-    first_date = next(iter(all_data.keys()))
-    first_data = all_data[first_date]
-
-    coords = np.column_stack([first_data["x"], first_data["y"]])
-
-    # Optimize leafsize for data size
-    leafsize = max(10, len(coords) // 1000)
-    tree = cKDTree(coords, leafsize=leafsize, compact_nodes=True, balanced_tree=True)
-
-    logger.info(f"Built optimized KDTree with {len(coords)} nodes, leafsize={leafsize}")
-    cache.kdtree = (tree, coords)
-    return tree, coords
-
-
-def _extract_node_data(data: dict, idx: int) -> dict:
-    """Helper to extract data at a specific index."""
-    result = {}
-    for k, v in data.items():
-        if k in ("dt_days", "dt_hours"):
-            result[k] = v
-            continue
-
-        val = v[idx]
-        if isinstance(val, np.floating):
-            result[k] = float(val)
-        elif isinstance(val, np.integer):
-            result[k] = int(val)
-        else:
-            result[k] = val
-    return result
-
-
-def nearest_node_kdtree(
-    tree: cKDTree,
-    coords: np.ndarray,
-    all_data: dict,
-    date: str,
-    x: float,
-    y: float,
-    radius: float = 50.0,
-) -> dict | None:
-    """Find nearest node using an already-built KDTree and preloaded data."""
-    logger.debug("nearest_node_kdtree: query at (%s, %s) radius=%s", x, y, radius)
-
-    if date not in all_data:
-        logger.debug("nearest_node_kdtree: date %s not in preloaded data", date)
-        return None
-
-    dist, idx = tree.query([x, y], k=1, distance_upper_bound=radius)
-    if not np.isfinite(dist) or idx >= len(coords):
-        logger.debug("nearest_node_kdtree: no node within radius %s", radius)
-        return None
-
-    return _extract_node_data(all_data[date], int(idx))
-
-
-def nearest_node_grid(
-    grid_cache: dict,
-    all_data: dict,
-    date: str,
-    x: float,
-    y: float,
-    radius: float = 50.0,
-) -> dict | None:
-    """Find nearest node using a pre-built grid index and preloaded data."""
-    logger.debug("nearest_node_grid: query at (%s, %s) radius=%s", x, y, radius)
-
-    if date not in all_data:
-        logger.debug("nearest_node_grid: date %s not in preloaded data", date)
-        return None
-
-    grid_map = grid_cache["map"]
-    x_spacing = grid_cache["x_spacing"]
-    y_spacing = grid_cache["y_spacing"]
-    coords = grid_cache["coords"]
-
-    grid_x = int(np.round(x / x_spacing))
-    grid_y = int(np.round(y / y_spacing))
-
-    max_search_cells = int(np.ceil(radius / min(x_spacing, y_spacing))) + 1
-
-    best_dist = np.inf
-    best_idx = None
-
-    for search_radius in range(max_search_cells + 1):
-        for dx in range(-search_radius, search_radius + 1):
-            for dy in range(-search_radius, search_radius + 1):
-                # only examine the ring for efficiency (skip inner cells duplicated earlier)
-                if abs(dx) < search_radius and abs(dy) < search_radius:
-                    continue
-
-                key = (grid_x + dx, grid_y + dy)
-                if key not in grid_map:
-                    continue
-
-                for idx in grid_map[key]:
-                    node_x, node_y = coords[idx]
-                    dist = np.hypot(x - node_x, y - node_y)
-                    if dist <= radius and dist < best_dist:
-                        best_dist = dist
-                        best_idx = idx
-
-        if best_idx is not None and search_radius > 0:
-            break
-
-    if best_idx is None:
-        logger.debug("nearest_node_grid: no node found within radius %s", radius)
-        return None
-
-    return _extract_node_data(all_data[date], int(best_idx))
-
-
 def nearest_node(
     x: float,
     y: float,
@@ -664,3 +480,79 @@ def nearest_node(
             return nearest_node_kdtree(tree, coords, all_data, date, x, y, radius)
 
     raise ValueError(f"Unknown method '{method}' - expected 'hybrid'|'kdtree'|'grid'")
+
+
+###=== Utility Functions ===###
+def _get_compiled_pattern(pattern: str) -> re.Pattern:
+    """Cache compiled regex patterns."""
+    return re.compile(pattern)
+
+
+def format_date_for_display(
+    date_str: str, input_format: str = "%Y%m%d", output_format: str = "%d/%m/%Y"
+) -> str:
+    """Convert date string from one format to another."""
+    try:
+        dt = datetime.strptime(date_str, input_format)
+        return dt.strftime(output_format)
+    except Exception:
+        return date_str
+
+
+def parse_display_date(
+    display_date: str, input_format: str = "%d/%m/%Y", output_format: str = "%Y%m%d"
+) -> str:
+    """Convert display date back to storage format."""
+    try:
+        dt = datetime.strptime(display_date, input_format)
+        return dt.strftime(output_format)
+    except Exception:
+        return display_date
+
+
+def parse_dic_filename(
+    file_path: Path, pattern: str | None = None
+) -> tuple[datetime, datetime]:
+    """
+    Parse DIC filename using regex pattern.
+
+    Args:
+        file_path: Path to the DIC file
+        pattern: Regex pattern with two capture groups for slave and master dates.
+
+    Returns:
+        Tuple of (slave_date, master_date)
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        ValueError: If filename doesn't match pattern or dates can't be parsed
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"DIC filename {file_path} does not exist")
+
+    if pattern is None:
+        pattern = settings.filename_pattern
+    compiled_pattern = _get_compiled_pattern(pattern)
+
+    try:
+        match = compiled_pattern.search(file_path.name)
+        if not match:
+            raise ValueError(
+                f"Filename {file_path.name} does not match pattern {pattern or pattern}"
+            )
+
+        if len(match.groups()) < 2:
+            raise ValueError(
+                f"Pattern must have at least 2 capture groups, got {len(match.groups())}"
+            )
+
+        slave_str = match.group(1)
+        master_str = match.group(2)
+
+        slave_datetime = datetime.strptime(slave_str, settings.date_format)
+        master_datetime = datetime.strptime(master_str, settings.date_format)
+
+    except Exception as e:
+        raise ValueError(f"Failed to parse DIC filename {file_path.name}") from e
+
+    return (slave_datetime, master_datetime)

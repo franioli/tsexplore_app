@@ -19,6 +19,121 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+###=== Front-end functions ===###
+
+
+def run_ts_inversion(
+    day_dic_dir: Path,
+    regularization: int = 10,
+    iterates: int = 10,
+):
+    """
+    Run time series inversion for all nodes in the dataset.
+
+    Workflow:
+    1) Load all DIC data with load_dic_data()
+    2) Extract node information
+    3) Call invert_node() for each node
+
+    Args:
+        day_dic_dir: Path to directory containing day_*.txt files
+        regularization: Regularization parameter (for future use)
+        iterates: Maximum number of iterations for inversion
+
+    Returns:
+        Dictionary with inversion results for all nodes
+    """
+    logger.info("Starting time series inversion for all nodes")
+
+    # -Step 1: Load all data
+    dic_data = load_dic_data(day_dic_dir)
+
+    ew_data = dic_data["ew"]  # (n_observations, n_nodes)
+    ns_data = dic_data["ns"]  # (n_observations, n_nodes)
+    weight_data = dic_data["weight"]  # (n_observations, n_nodes)
+    coordinates = dic_data["coordinates"]  # (n_nodes, 2)
+    timestamp = dic_data["timestamp"]  # (n_observations, 2)
+    deltat = dic_data["deltat"]  # (n_observations,)
+
+    # -Step 2: Initialize output matrices
+    n_nodes = ew_data.shape[1]
+    n_times = len(np.unique(np.sort(timestamp))) - 1
+
+    # --calcolo vettore deltaT
+    # ---creo vettore dei tempi dove ho un'osservazione
+    # -1) cerco valori temporali per cui ho un dato
+    Tu = np.sort(np.unique(timestamp))
+    Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
+    for i in range(len(Tu) - 1):
+        Time_hat[i, :] = [Tu[i], Tu[i + 1]]
+    DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
+
+    # -inizializzo matrici dei risultati
+    EW_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
+    NS_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
+
+    # -Step 3: Invert each node
+    logger.info(f"Starting inversion for {n_nodes} nodes...")
+    tic = time.time()
+    for node_idx in tqdm(range(n_nodes), desc="Inverting nodes"):
+        node_x = coordinates[node_idx, 0]
+        node_y = coordinates[node_idx, 1]
+
+        try:
+            # -extract data for this node
+            ew_node = ew_data[:, node_idx]
+            ns_node = ns_data[:, node_idx]
+            weight_node = weight_data[:, node_idx]
+
+            # -invert the node
+            result = invert_node(
+                ew_series=ew_node,
+                ns_series=ns_node,
+                weight_series=weight_node,
+                timestamp=timestamp,
+                node_idx=node_idx,
+                node_x=node_x,
+                node_y=node_y,
+                iterates=iterates,
+            )
+
+            # -populate results
+            if result is not None:
+                EW_hat[node_idx, :] = result["EW_hat"]
+                NS_hat[node_idx, :] = result["NS_hat"]
+
+        except Exception as e:
+            # -keep nan for this node
+            logger.warning(
+                f"Error inverting node {node_idx} at ({node_x:.1f}, {node_y:.1f}): {e}"
+            )
+
+    toc = time.time()
+    logger.info(f"Inversion completed in {(toc - tic) // 1} seconds")
+
+    # -calcolo anche il tempo medio
+    tm = timestamp[:, 0][:, None] + (deltat / 2 * 24).astype("timedelta64[h]")
+    timestamp = np.hstack((timestamp, tm))
+    TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
+    Time_hat = np.hstack((Time_hat, TM))
+
+    output = {
+        "EW_hat": EW_hat,
+        "NS_hat": NS_hat,
+        "EW_init": ew_data,
+        "NS_init": ns_data,
+        "timestamp": timestamp,
+        "deltat": deltat.squeeze(),
+        "DT_hat": DT_hat.squeeze(),
+        "Time_hat": Time_hat,
+        "coordinates": coordinates,
+    }
+
+    return output
+
+
+###=== INVERSION BACK-END FUNCTIONS ===####
+
 
 def load_dic_data(day_dic_dir: Path):
     """
@@ -573,116 +688,6 @@ def invert_node2(
         "deltat": deltat,
         "DT_hat": DT_hat.squeeze(),
         "Time_hat": Time_hat,
-    }
-
-    return output
-
-
-def run_ts_inversion(
-    day_dic_dir: Path,
-    regularization: int = 10,
-    iterates: int = 10,
-):
-    """
-    Run time series inversion for all nodes in the dataset.
-
-    Workflow:
-    1) Load all DIC data with load_dic_data()
-    2) Extract node information
-    3) Call invert_node() for each node
-
-    Args:
-        day_dic_dir: Path to directory containing day_*.txt files
-        regularization: Regularization parameter (for future use)
-        iterates: Maximum number of iterations for inversion
-
-    Returns:
-        Dictionary with inversion results for all nodes
-    """
-    logger.info("Starting time series inversion for all nodes")
-
-    # -Step 1: Load all data
-    dic_data = load_dic_data(day_dic_dir)
-
-    ew_data = dic_data["ew"]  # (n_observations, n_nodes)
-    ns_data = dic_data["ns"]  # (n_observations, n_nodes)
-    weight_data = dic_data["weight"]  # (n_observations, n_nodes)
-    coordinates = dic_data["coordinates"]  # (n_nodes, 2)
-    timestamp = dic_data["timestamp"]  # (n_observations, 2)
-    deltat = dic_data["deltat"]  # (n_observations,)
-
-    # -Step 2: Initialize output matrices
-    n_nodes = ew_data.shape[1]
-    n_times = len(np.unique(np.sort(timestamp))) - 1
-
-    # --calcolo vettore deltaT
-    # ---creo vettore dei tempi dove ho un'osservazione
-    # -1) cerco valori temporali per cui ho un dato
-    Tu = np.sort(np.unique(timestamp))
-    Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
-    for i in range(len(Tu) - 1):
-        Time_hat[i, :] = [Tu[i], Tu[i + 1]]
-    DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
-
-    # -inizializzo matrici dei risultati
-    EW_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
-    NS_hat = np.full((n_nodes, n_times), np.nan, dtype="float32")
-
-    # -Step 3: Invert each node
-    logger.info(f"Starting inversion for {n_nodes} nodes...")
-    tic = time.time()
-    for node_idx in tqdm(range(n_nodes), desc="Inverting nodes"):
-        node_x = coordinates[node_idx, 0]
-        node_y = coordinates[node_idx, 1]
-
-        try:
-            # -extract data for this node
-            ew_node = ew_data[:, node_idx]
-            ns_node = ns_data[:, node_idx]
-            weight_node = weight_data[:, node_idx]
-
-            # -invert the node
-            result = invert_node(
-                ew_series=ew_node,
-                ns_series=ns_node,
-                weight_series=weight_node,
-                timestamp=timestamp,
-                node_idx=node_idx,
-                node_x=node_x,
-                node_y=node_y,
-                iterates=iterates,
-            )
-
-            # -populate results
-            if result is not None:
-                EW_hat[node_idx, :] = result["EW_hat"]
-                NS_hat[node_idx, :] = result["NS_hat"]
-
-        except Exception as e:
-            # -keep nan for this node
-            logger.warning(
-                f"Error inverting node {node_idx} at ({node_x:.1f}, {node_y:.1f}): {e}"
-            )
-
-    toc = time.time()
-    logger.info(f"Inversion completed in {(toc - tic) // 1} seconds")
-
-    # -calcolo anche il tempo medio
-    tm = timestamp[:, 0][:, None] + (deltat / 2 * 24).astype("timedelta64[h]")
-    timestamp = np.hstack((timestamp, tm))
-    TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
-    Time_hat = np.hstack((Time_hat, TM))
-
-    output = {
-        "EW_hat": EW_hat,
-        "NS_hat": NS_hat,
-        "EW_init": ew_data,
-        "NS_init": ns_data,
-        "timestamp": timestamp,
-        "deltat": deltat.squeeze(),
-        "DT_hat": DT_hat.squeeze(),
-        "Time_hat": Time_hat,
-        "coordinates": coordinates,
     }
 
     return output

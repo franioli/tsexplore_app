@@ -10,12 +10,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .cache import get_loaded_dates
 from .config import get_logger, get_settings
 from .models.types import HealthCheckResponse, NearestNodeRequest, NearestNodeResponse
 from .services.data import (
     build_global_kdtree,
     format_date_for_display,
-    get_loaded_dates,
     load_all_series,
     load_day_dic,
     nearest_node,
@@ -25,66 +25,6 @@ from .services.plots import make_timeseries_figure, make_velocity_map_figure
 
 settings = get_settings()
 logger = get_logger()
-
-
-def run_ts_inversion(
-    data_dir,
-    file_pattern,
-    filename_pattern,
-    node_x,
-    node_y,
-):
-    from .services.inversion import invert_node2, load_dic_data
-
-    logger.info("Running time series inversion for single node...")
-    # Load all DIC data once
-    # TODO: DO NOT READ all the data every time, optimize this
-    dic_data = load_dic_data(data_dir)
-
-    # Get node index from KDTree
-    tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
-    dist, node_idx = tree.query([node_x, node_y], k=1)
-    if not np.isfinite(dist):
-        raise ValueError(f"Could not locate node at ({node_x}, {node_y})")
-    logger.debug(f"Found node index {node_idx} at distance {dist:.2f}px")
-
-    # Extract data for this node
-    ew_series = dic_data["ew"][:, node_idx]
-    ns_series = dic_data["ns"][:, node_idx]
-    ensamble_mad = dic_data["weight"][:, node_idx]
-    timestamp = dic_data["timestamp"]
-
-    # Run inversion for this node
-    logger.info(
-        f"Starting inversion computation at node index {node_idx} - ({node_x:.1f}, {node_y:.1f})"
-    )
-    inversion_results = invert_node2(
-        ew_series=ew_series,
-        ns_series=ns_series,
-        timestamp=timestamp,
-        node_idx=node_idx,
-        node_x=coords[node_idx, 0],
-        node_y=coords[node_idx, 1],
-        weight_method="variable",
-        weight_variable=ensamble_mad,
-        regularization_method="laplacian",
-        lambda_scaling=1.0,
-        iterates=10,
-    )
-
-    if inversion_results is None:
-        raise ValueError("Inversion returned None (invalid data)")
-
-    # Unpack inversion results
-    ew_hat = inversion_results["EW_hat"]
-    ns_hat = inversion_results["NS_hat"]
-    time_hat = inversion_results["Time_hat"]  # Shape: (n_inverted, 3)
-    logger.info(
-        "Inversion results obtained successfully: "
-        f"   Inversion output: {len(ew_hat)} time steps, "
-    )
-
-    return ew_hat, ns_hat, time_hat
 
 
 # Application state class for better state management
