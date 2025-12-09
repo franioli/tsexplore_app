@@ -1,105 +1,21 @@
-"""Data loading, caching, and spatial indexing for DIC velocity fields."""
+"""Data loading, and spatial indexing for DIC velocity fields."""
 
 import logging
 import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree  # type: ignore
 
-from .config import get_settings
+from ..cache import cache
+from ..config import get_settings
 
-# Configure logging
 logger = logging.getLogger(__name__)
-
 settings = get_settings()
 
-
-###=== Data Cache Manager ===###
-class DataCache:
-    """Centralized data cache manager."""
-
-    def __init__(self):
-        self._all_data: dict[str, dict] | None = None
-        self._kdtree: tuple[cKDTree, np.ndarray] | None = None
-        self._grid: dict[str, Any] | None = None
-        self._images: dict[str, dict[str, Any]] = {}
-
-    @property
-    def all_data(self) -> dict[str, dict] | None:
-        return self._all_data
-
-    @all_data.setter
-    def all_data(self, value: dict[str, dict]) -> None:
-        self._all_data = value
-
-    @property
-    def kdtree(self) -> tuple[cKDTree, np.ndarray] | None:
-        return self._kdtree
-
-    @kdtree.setter
-    def kdtree(self, value: tuple[cKDTree, np.ndarray]) -> None:
-        self._kdtree = value
-
-    @property
-    def grid(self) -> dict[str, Any] | None:
-        return self._grid
-
-    @grid.setter
-    def grid(self, value: dict[str, Any]) -> None:
-        self._grid = value
-
-    @property
-    def num_dates(self) -> int | None:
-        """Get number of loaded dates."""
-        if self._all_data is None:
-            return None
-        return len(self._all_data)
-
-    @property
-    def images(self) -> dict[str, dict[str, Any]]:
-        return self._images
-
-    def get_image(
-        self, path: str
-    ) -> tuple[str | None, tuple[int, int] | None, bytes | None]:
-        """Return cached image (data_url, size, raw_bytes) if present."""
-        if path in self._images:
-            img = self._images[path]
-            return img["data_url"], img["size"], img["bytes"]
-        return (None, None, None)
-
-    def store_image(
-        self, path: str, data_url: str, size: tuple[int, int], raw_bytes: bytes
-    ) -> None:
-        """Store image metadata and raw bytes in cache."""
-        self._images[path] = {
-            "data_url": data_url,
-            "size": size,
-            "bytes": raw_bytes,
-        }
-
-    def clear(self) -> None:
-        """Clear all cached data."""
-        self._all_data = None
-        self._kdtree = None
-        self._grid = None
-        self._images = {}
-
-    def is_loaded(self) -> bool:
-        """Check if data is loaded."""
-        return self._all_data is not None
-
-    def has_kdtree(self) -> bool:
-        """Check if spatial indices are built."""
-        return self._kdtree is not None or self._grid is not None
-
-
-# Global cache instance
-cache = DataCache()
 
 logger.info(
     f"Data module initialized: data_dir={settings.data_dir}, "
@@ -611,55 +527,42 @@ def _extract_node_data(data: dict, idx: int) -> dict:
 
 
 def nearest_node_kdtree(
-    data_dir: Path | None,
-    file_pattern: str | None,
-    filename_pattern: str | None,
+    tree: cKDTree,
+    coords: np.ndarray,
+    all_data: dict,
     date: str,
     x: float,
     y: float,
     radius: float = 50.0,
 ) -> dict | None:
-    """Find nearest node using KDTree spatial index."""
-    logger.debug(f"Finding nearest node using KDTree at ({x}, {y})")
+    """Find nearest node using an already-built KDTree and preloaded data."""
+    logger.debug("nearest_node_kdtree: query at (%s, %s) radius=%s", x, y, radius)
 
-    try:
-        tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
-        all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
-
-        if date not in all_data:
-            logger.warning(f"Date {date} not found in preloaded data")
-            return None
-
-        dist, idx = tree.query([x, y], k=1, distance_upper_bound=radius)
-
-        if not np.isfinite(dist) or idx >= len(coords):
-            logger.debug(f"No node found within radius {radius}")
-            return None
-
-        result = _extract_node_data(all_data[date], idx)
-        logger.debug(f"Found node at ({result['x']:.2f}, {result['y']:.2f})")
-        return result
-
-    except Exception as e:
-        logger.error(f"Error in nearest_node_kdtree: {e}", exc_info=True)
+    if date not in all_data:
+        logger.debug("nearest_node_kdtree: date %s not in preloaded data", date)
         return None
+
+    dist, idx = tree.query([x, y], k=1, distance_upper_bound=radius)
+    if not np.isfinite(dist) or idx >= len(coords):
+        logger.debug("nearest_node_kdtree: no node within radius %s", radius)
+        return None
+
+    return _extract_node_data(all_data[date], int(idx))
 
 
 def nearest_node_grid(
-    data_dir: Path | None,
-    file_pattern: str | None,
-    filename_pattern: str | None,
+    grid_cache: dict,
+    all_data: dict,
     date: str,
     x: float,
     y: float,
     radius: float = 50.0,
 ) -> dict | None:
-    """Ultra-fast nearest node search using grid-based spatial index."""
-    grid_cache = build_grid_index(data_dir, file_pattern, filename_pattern)
-    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
+    """Find nearest node using a pre-built grid index and preloaded data."""
+    logger.debug("nearest_node_grid: query at (%s, %s) radius=%s", x, y, radius)
 
     if date not in all_data:
-        logger.warning(f"Date {date} not found")
+        logger.debug("nearest_node_grid: date %s not in preloaded data", date)
         return None
 
     grid_map = grid_cache["map"]
@@ -667,7 +570,6 @@ def nearest_node_grid(
     y_spacing = grid_cache["y_spacing"]
     coords = grid_cache["coords"]
 
-    # Snap query point to grid
     grid_x = int(np.round(x / x_spacing))
     grid_y = int(np.round(y / y_spacing))
 
@@ -679,46 +581,29 @@ def nearest_node_grid(
     for search_radius in range(max_search_cells + 1):
         for dx in range(-search_radius, search_radius + 1):
             for dy in range(-search_radius, search_radius + 1):
+                # only examine the ring for efficiency (skip inner cells duplicated earlier)
                 if abs(dx) < search_radius and abs(dy) < search_radius:
                     continue
 
                 key = (grid_x + dx, grid_y + dy)
-                if key in grid_map:
-                    for idx in grid_map[key]:
-                        node_x, node_y = coords[idx]
-                        dist = np.sqrt((x - node_x) ** 2 + (y - node_y) ** 2)
-                        if dist < best_dist and dist <= radius:
-                            best_dist = dist
-                            best_idx = idx
+                if key not in grid_map:
+                    continue
+
+                for idx in grid_map[key]:
+                    node_x, node_y = coords[idx]
+                    dist = np.hypot(x - node_x, y - node_y)
+                    if dist <= radius and dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
 
         if best_idx is not None and search_radius > 0:
             break
 
     if best_idx is None:
+        logger.debug("nearest_node_grid: no node found within radius %s", radius)
         return None
 
-    result = _extract_node_data(all_data[date], best_idx)
-    logger.debug(f"Found node at ({result['x']:.2f}, {result['y']:.2f})")
-    return result
-
-
-def nearest_node_hybrid(
-    data_dir: Path | None,
-    file_pattern: str | None,
-    filename_pattern: str | None,
-    date: str,
-    x: float,
-    y: float,
-    radius: float = 50.0,
-) -> dict | None:
-    """Hybrid: use grid for small radius, KDTree for large radius."""
-    if radius <= 100:
-        return nearest_node_grid(
-            data_dir, file_pattern, filename_pattern, date, x, y, radius
-        )
-    return nearest_node_kdtree(
-        data_dir, file_pattern, filename_pattern, date, x, y, radius
-    )
+    return _extract_node_data(all_data[date], int(best_idx))
 
 
 def nearest_node(
@@ -733,37 +618,49 @@ def nearest_node(
     method: Literal["hybrid", "kdtree", "grid"] = "hybrid",
 ) -> dict | None:
     """
-    Find nearest node to (x, y) at given date.
+    High-level nearest-node lookup. Preloads data once and builds required index
+    only once. Delegates to small helper functions.
 
-    Args:
-        data_dir: Path to data directory (uses settings if None)
-        file_pattern: File pattern (uses settings if None)
-        filename_pattern: Filename pattern (uses settings if None)
-        date: Date in YYYYMMDD format
-        x: X coordinate
-        y: Y coordinate
-        radius: Search radius in pixels
-        method: Search method - "hybrid", "kdtree", or "grid"
-
-    Returns:
-        Dictionary with node data or None if not found
+    Raises:
+        ValueError for unknown method.
     """
-    logger.debug(f"Finding nearest node at ({x}, {y}) using {method} method")
+    logger.debug(
+        "nearest_node: query (%s,%s) date=%s method=%s radius=%s",
+        x,
+        y,
+        date,
+        method,
+        radius,
+    )
 
+    # Resolve defaults and preload
+    data_dir = data_dir or settings.data_dir
+    file_pattern = file_pattern or settings.file_pattern
+    filename_pattern = filename_pattern or settings.filename_pattern
+
+    # Load all data once (from cache if available)
+    all_data = preload_all_data(data_dir, file_pattern, filename_pattern)
+    if date not in all_data:
+        logger.debug("nearest_node: date %s not found in preloaded data", date)
+        return None
+
+    # Search using requested method
     if method == "kdtree":
-        return nearest_node_kdtree(
-            data_dir, file_pattern, filename_pattern, date, x, y, radius
-        )
-    elif method == "grid":
-        return nearest_node_grid(
-            data_dir, file_pattern, filename_pattern, date, x, y, radius
-        )
-    elif method == "hybrid":
-        return nearest_node_hybrid(
-            data_dir, file_pattern, filename_pattern, date, x, y, radius
-        )
-    else:
-        logger.warning(f"Unknown method '{method}', defaulting to 'hybrid'")
-        return nearest_node_hybrid(
-            data_dir, file_pattern, filename_pattern, date, x, y, radius
-        )
+        tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
+        return nearest_node_kdtree(tree, coords, all_data, date, x, y, radius)
+
+    if method == "grid":
+        grid_cache = build_grid_index(data_dir, file_pattern, filename_pattern)
+        return nearest_node_grid(grid_cache, all_data, date, x, y, radius)
+
+    if method == "hybrid":
+        # prefer grid for small radius
+        if radius <= 100:
+            grid_cache = build_grid_index(data_dir, file_pattern, filename_pattern)
+            return nearest_node_grid(grid_cache, all_data, date, x, y, radius)
+
+        else:
+            tree, coords = build_global_kdtree(data_dir, file_pattern, filename_pattern)
+            return nearest_node_kdtree(tree, coords, all_data, date, x, y, radius)
+
+    raise ValueError(f"Unknown method '{method}' - expected 'hybrid'|'kdtree'|'grid'")

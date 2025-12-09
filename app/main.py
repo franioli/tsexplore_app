@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .config import get_logger, get_settings
-from .data import (
+from .models.types import HealthCheckResponse, NearestNodeRequest, NearestNodeResponse
+from .services.data import (
     build_global_kdtree,
     format_date_for_display,
     get_loaded_dates,
@@ -20,8 +21,7 @@ from .data import (
     nearest_node,
     preload_all_data,
 )
-from .models import HealthCheckResponse, NearestNodeRequest, NearestNodeResponse
-from .plots import make_timeseries_figure, make_velocity_map_figure
+from .services.plots import make_timeseries_figure, make_velocity_map_figure
 
 settings = get_settings()
 logger = get_logger()
@@ -34,7 +34,7 @@ def run_ts_inversion(
     node_x,
     node_y,
 ):
-    from .inversion import invert_node2, load_dic_data
+    from .services.inversion import invert_node2, load_dic_data
 
     logger.info("Running time series inversion for single node...")
     # Load all DIC data once
@@ -144,8 +144,8 @@ app = FastAPI(
 )
 
 # Mount static files and templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+templates = Jinja2Templates(directory="app/templates")
 
 
 # ===== HTML Endpoints =====
@@ -379,7 +379,7 @@ async def api_timeseries(
             try:
                 from plotly import graph_objects as go
 
-                from .inversion import invert_node2, load_dic_data
+                from .services.inversion import invert_node2, load_dic_data
 
                 # Load DIC data and run inversion
                 dic_data = load_dic_data(settings.data_dir)
@@ -493,7 +493,7 @@ async def api_nearest(
 @app.get("/api/health", response_model=HealthCheckResponse)
 async def health_check():
     """Health check endpoint."""
-    from .data import cache
+    from .services.data import cache
 
     return HealthCheckResponse(
         status="healthy" if app_state.is_ready() else "starting",

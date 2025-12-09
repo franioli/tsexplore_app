@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 from plotly import graph_objects as go
 
-from .data import cache
+from ..cache import cache
 
 logger = logging.getLogger(__name__)
 
