@@ -6,9 +6,10 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ..config import get_logger, get_settings
-from ..services.data import build_global_kdtree, load_all_series
 from ..services.inversion import invert_node2, load_dic_data
 from ..services.plots import make_timeseries_figure
+from ..services.provider import get_data_provider
+from ..services.spatial import build_kdtree
 
 logger = get_logger()
 settings = get_settings()
@@ -32,13 +33,12 @@ async def timeseries(
 ):
     """Return timeseries figure for a node and optional inversion overlay."""
     logger.info(f"timeseries: node=({node_x},{node_y}) inversion={ts_inversion}")
-    ts = load_all_series(
-        settings.data_dir,
-        settings.file_pattern,
-        settings.filename_pattern,
-        node_x=node_x,
-        node_y=node_y,
-    )
+
+    provider = get_data_provider()
+    all_data = provider.preload_all()
+
+    # Build time series for this node across all dates
+    ts = _extract_node_timeseries(all_data, node_x, node_y, provider)
 
     if not ts or not ts.get("dates"):
         raise HTTPException(status_code=404, detail="No timeseries data for node")
@@ -89,17 +89,21 @@ async def timeseries(
 
     # add simple inversion overlay (magnitude only)
     if ts_inversion:
+        logger.warning(
+            "Performing time-series inversion works only on local data. Working on db is not implemented yet."
+        )
         try:
-            # load full dic data and locate node
-            dic = load_dic_data(settings.data_dir)
-            tree, coords = build_global_kdtree(
-                settings.data_dir,
-                settings.file_pattern,
-                settings.filename_pattern,
-            )
+            # Build KDTree and find node
+            tree, coords = build_kdtree(provider)
             dist, idx = tree.query([node_x, node_y], k=1)
             if not np.isfinite(dist):
                 raise RuntimeError("node not found in KDTree")
+
+            # load full dic data and locate node
+            try:
+                dic = load_dic_data(settings.data_dir)
+            except FileNotFoundError as e:
+                raise RuntimeError(f"load_dic_data error: {e}")
 
             ew_series = dic["ew"][:, idx]
             ns_series = dic["ns"][:, idx]
@@ -144,3 +148,52 @@ async def timeseries(
             logger.error(f"Inversion overlay error: {e}")
 
     return JSONResponse(json.loads(fig.to_json()))
+
+
+def _extract_node_timeseries(
+    all_data: dict[str, dict],
+    node_x: float,
+    node_y: float,
+    provider,
+) -> dict:
+    """
+    Extract time series for a specific node across all dates.
+
+    Uses KDTree to find nearest node index, then extracts data for that index
+    across all dates.
+    """
+    if not all_data:
+        return {}
+
+    # Build KDTree to find node
+    tree, coords = build_kdtree(provider)
+    dist, idx = tree.query([node_x, node_y], k=1)
+
+    if not np.isfinite(dist):
+        logger.warning(f"Node ({node_x}, {node_y}) not found in KDTree")
+        return {}
+
+    # Extract time series
+    ts = {
+        "dates": [],
+        "dx": [],
+        "dy": [],
+        "disp_mag": [],
+        "u": [],
+        "v": [],
+        "V": [],
+        "ensamble_mad": [],
+    }
+
+    for date_str in sorted(all_data.keys()):
+        data = all_data[date_str]
+        ts["dates"].append(date_str)
+        ts["dx"].append(data["dx"][idx])
+        ts["dy"].append(data["dy"][idx])
+        ts["disp_mag"].append(data["disp_mag"][idx])
+        ts["u"].append(data["u"][idx])
+        ts["v"].append(data["v"][idx])
+        ts["V"].append(data["V"][idx])
+        ts["ensamble_mad"].append(data["ensamble_mad"][idx])
+
+    return ts

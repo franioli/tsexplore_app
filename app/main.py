@@ -8,58 +8,50 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .cache import get_loaded_dates
+from .cache import AppState, get_loaded_dates
 from .config import get_logger, get_settings
 from .routers import router as api_router
-from .services.data import (
-    build_global_kdtree,
-    preload_all_data,
-)
+from .services import build_kdtree, get_data_provider
 
-settings = get_settings()
 logger = get_logger()
-
-
-# Global app state
-class AppState:
-    """Centralized application state."""
-
-    def __init__(self):
-        self.data_loaded = False
-        self.kdtree_built = False
-
-    def is_ready(self) -> bool:
-        """Check if app is ready to serve requests."""
-        return self.data_loaded and self.kdtree_built
-
-
+settings = get_settings()
 app_state = AppState()
+
+# Global provider variable initialized in lifespan()
+provider = None  # type: ignore
+
+# Jinja2 templates
+templates = Jinja2Templates(directory="app/templates")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: preload data on startup."""
-    logger.info("Starting application - preloading data...")
+    global provider
+    logger.info("Starting application - initializing provider")
     try:
-        preload_all_data(
-            data_dir=settings.data_dir,
-            file_pattern=settings.file_pattern,
-            filename_pattern=settings.filename_pattern,
-            dt_days_preferred=settings.dt_days_preferred,
-        )
-        app_state.data_loaded = True
-        logger.info("Data preloaded successfully")
+        # Initialize data provider (file or DB)
+        provider = get_data_provider()
+        logger.info(f"Using data provider: {provider.__class__.__name__}")
 
-        build_global_kdtree(
-            data_dir=settings.data_dir,
-            file_pattern=settings.file_pattern,
-            filename_pattern=settings.filename_pattern,
-        )
-        app_state.kdtree_built = True
-        logger.info("KDTree built successfully")
+        # If not using DB backend preload all data and build spatial index
+        if not settings.use_database:
+            logger.info("Non-DB backend detected - preloading all data")
+            all_data = provider.preload_all()
+            logger.info(f"Preloaded {len(all_data)} DIC records")
+
+            tree, coords = build_kdtree(provider)
+            logger.info(f"Built KDTree with {len(coords)} nodes")
+        else:
+            logger.info(
+                "DB backend detected - not preloading data at startup (use loader to preload a range)"
+            )
+
+        app_state.mark_ready()
+        logger.info("Application ready")
 
     except Exception as e:
-        logger.error(f"Failed to preload data: {e}", exc_info=True)
+        logger.error(f"Failed during startup initialization: {e}", exc_info=True)
         raise
 
     yield
@@ -75,12 +67,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# Mount static files
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 # Include API endpoints from the routers folder
 app.include_router(api_router, prefix="/api")
-
-# Mount static files and templates
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
 
 
 # Serve HTML UI if enabled in settings
@@ -118,9 +110,9 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "app:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower(),
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
     )

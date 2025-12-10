@@ -7,6 +7,71 @@ window.currentDate = currentDate;
 window.selectedNode = selectedNode;
 window.fetchVelocityMap = fetchVelocityMap;
 
+
+async function startLoadRange() {
+  if (!USE_DATABASE || !document.getElementById("load-start-picker") || !document.getElementById("load-end-picker")) {
+    alert("Load range only available for database backend.");
+    return;
+  }
+
+  const startDate = document.getElementById("load-start-picker").value;
+  const endDate = document.getElementById("load-end-picker").value;
+  if (!startDate || !endDate) {
+    alert("Please select both start and end dates.");
+    return;
+  }
+
+  const url = new URL("/api/loader/load-range", window.location.origin);
+  // format start/end using YYYYMMDD or use iso; both accepted by API
+  const params = { start_date: startDate, end_date: endDate };
+
+  const res = await fetch(url.toString() + `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    alert("Failed to start loading: " + await res.text());
+    return;
+  }
+
+  // Show progress bar and start polling
+  document.getElementById("load-progress").style.display = "block";
+  document.getElementById("load-status").textContent = "Loading...";
+
+  const poll = setInterval(async () => {
+    const urlProg = new URL("/api/loader/progress", window.location.origin);
+    const r = await fetch(urlProg.toString());
+    if (!r.ok) {
+      document.getElementById("load-status").textContent = "Failed to read progress.";
+      clearInterval(poll);
+      return;
+    }
+    const p = await r.json();
+    if (p.total && p.total > 0) {
+      const percent = Math.round((p.done / p.total) * 100);
+      document.getElementById("load-progress").value = percent;
+    } else {
+      document.getElementById("load-progress").value = 0;
+    }
+
+    if (!p.in_progress) {
+      // finished (success or error)
+      if (p.error) {
+        document.getElementById("load-status").textContent = "Error: " + p.error;
+      } else {
+        document.getElementById("load-status").textContent = "Load complete";
+        // reload map and timeseries UI
+        if (window.currentDate) {
+          fetchVelocityMap();
+          if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+        }
+      }
+      clearInterval(poll);
+    }
+  }, 1000);
+}
+
+
 async function fetchVelocityMap() {
   if (!window.currentDate) {
     console.log("No current date set, skipping velocity map fetch");
@@ -203,6 +268,36 @@ document.getElementById("error-band").addEventListener("change", () => {
 
 // Attach TS inversion button click handler
 document.getElementById("ts-inversion").addEventListener("click", runTSInversion);
+
+
+// wire the button on DOM ready
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("load-data");
+  if (btn) btn.addEventListener("click", startLoadRange);
+
+  // init datepickers for load range inputs using flatpickr and prefill values
+  if (typeof flatpickr !== "undefined" && document.getElementById("load-start-picker")) {
+    flatpickr("#load-start-picker", {
+      enable: datesIso,
+      dateFormat: "Y-m-d",
+      allowInput: true,
+    });
+    flatpickr("#load-end-picker", {
+      enable: datesIso,
+      dateFormat: "Y-m-d",
+      allowInput: true,
+    });
+  }
+
+  // disable load controls when not using DB backend
+  if (!USE_DATABASE) {
+    const p = document.getElementById("load-start-picker");
+    if (p) p.disabled = true;
+    const q = document.getElementById("load-end-picker");
+    if (q) q.disabled = true;
+    const b = document.getElementById("load-data");
+    if (b) b.disabled = true;
+  }
 
 // Initial load - wait for DOM and date picker to be ready
 window.addEventListener("load", () => {

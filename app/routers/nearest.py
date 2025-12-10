@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from ..config import get_logger, get_settings
-from ..models.types import NearestNodeRequest, NearestNodeResponse
-from ..services.data import nearest_node
+from ..models.types import NearestNodeResponse
+from ..services.spatial import nearest_node as find_nearest_node
 
 logger = get_logger()
 settings = get_settings()
@@ -20,22 +20,16 @@ async def api_nearest(
     method: str = Query("hybrid"),
 ):
     """Find nearest node."""
-    # Validate request
-    request_data = NearestNodeRequest(date=date, x=x, y=y, radius=radius, method=method)
-
     logger.info(
         f"API /nearest - date={date}, x={x}, y={y}, radius={radius}, method={method}"
     )
     try:
-        node = nearest_node(
+        node = find_nearest_node(
             x=x,
             y=y,
             date=date,
-            data_dir=settings.data_dir,
-            file_pattern=settings.file_pattern,
-            filename_pattern=settings.filename_pattern,
             radius=radius,
-            method=method,
+            method=method,  # type: ignore
         )
 
         if node is None:

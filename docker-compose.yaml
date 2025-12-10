@@ -1,0 +1,15 @@
+services:
+  tsexplore:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: tsexplore
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /ppcx/data
+      # use the project environment stored outside /app so mounted source won't break it
+      UV_PROJECT_ENVIRONMENT: /opt/.venv
+    volumes:
+      - ./:/app:rw     # allow live edits in container
+    ports:
+      - "8002:8000"   # make TS app available on host:8002

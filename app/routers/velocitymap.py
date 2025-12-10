@@ -1,11 +1,12 @@
+from datetime import datetime
+
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from ..cache import get_loaded_dates
 from ..config import get_logger, get_settings
-from ..services.data import format_date_for_display, load_day_dic
 from ..services.plots import make_velocity_map_figure
+from ..services.provider import get_data_provider
 
 logger = get_logger()
 settings = get_settings()
@@ -16,7 +17,9 @@ router = APIRouter()
 @router.get("/dates")
 async def dates_list():
     """Return loaded dates as YYYYMMDD list."""
-    return JSONResponse({"dates": get_loaded_dates()})
+    provider = get_data_provider()
+    dates = provider.get_available_dates()
+    return JSONResponse({"dates": dates})
 
 
 @router.get("/")
@@ -35,14 +38,11 @@ async def velocity_map(
 ):
     """Create map for a given date."""
     logger.info(f"map: date={date} use_velocity={use_velocity}")
-    try:
-        raw = load_day_dic(
-            settings.data_dir,
-            date,
-            settings.file_pattern,
-            settings.filename_pattern,
-        )
-    except FileNotFoundError:
+
+    provider = get_data_provider()
+    raw = provider.get_dic_data(date)
+
+    if not raw:
         raise HTTPException(status_code=404, detail=f"No data for date {date}")
 
     x, y = raw["x"], raw["y"]
@@ -50,8 +50,13 @@ async def velocity_map(
     mag = raw["V"] if use_velocity else raw["disp_mag"]
     units = "velocity (px/day)" if use_velocity else "displacement (px)"
 
+    try:
+        date_display = datetime.strptime(date, "%Y%m%d").strftime("%d/%m/%Y")
+    except ValueError:
+        date_display = date
+
     metadata = {
-        "Date": format_date_for_display(date),
+        "Date": date_display,
         "dt (days)": dt_days or "N/A",
         "N points": len(x),
         "Median |v|": float(np.median(mag)),

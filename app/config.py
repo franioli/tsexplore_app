@@ -7,6 +7,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings with validation."""
 
+    # Database connection (optional - falls back to file-based if not set)
+    # use_database: bool = False
+    # db_host: str = "db"
+    # db_port: int = 5432
+    # db_name: str = "ppcx"
+    # db_user: str = "postgres"
+    # db_password: str = ""
+
+    use_database: bool = False
+    db_host: str = "150.145.51.193"
+    db_port: int = 5434
+    db_name: str = "planpincieux"
+    db_user: str = "postgres"
+    db_password: str = "postgresppcx"
+
+    use_api: bool = False
+    api_host: str = "150.145.51.193"
+    api_port: int = 8080
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

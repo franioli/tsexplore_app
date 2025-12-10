@@ -292,12 +292,16 @@ def make_velocity_map_figure(
             scaleratio=1,
             showgrid=False,
         ),
-        yaxis=dict(range=y_range, autorange="min reversed", showgrid=False),
+        yaxis=dict(range=y_range, showgrid=False),
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode="pan",
         template="plotly_white",
         hovermode="closest",
     )
+
+    # keep image coordinates: y increases downward
+    fig.update_xaxes(scaleanchor="y", scaleratio=1)
+    fig.update_yaxes(autorange="reversed")
 
     return fig
 
