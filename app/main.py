@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .cache import AppState, get_loaded_dates
+from .cache import AppState, cache
 from .config import get_logger, get_settings
 from .routers import router as api_router
 from .services import build_kdtree, get_data_provider
@@ -43,6 +43,10 @@ async def lifespan(app: FastAPI):
             tree, coords = build_kdtree(provider)
             logger.info(f"Built KDTree with {len(coords)} nodes")
         else:
+            
+            # Load only one sample day to display correctly the ui, 
+            
+            
             logger.info(
                 "DB backend detected - not preloading data at startup (use loader to preload a range)"
             )
@@ -78,6 +82,18 @@ app.include_router(api_router, prefix="/api")
 # Serve HTML UI if enabled in settings
 if settings.serve_ui:
 
+    def get_loaded_dates() -> list[str]:
+        """Return dates from cache if present, otherwise from provider."""
+        # Use cached preloaded range (DB) if present
+        if cache.all_data:
+            return sorted(cache.all_data.keys())
+        # Fallback to provider's available dates (reads DB or lists files)
+        provider = get_data_provider()
+        try:
+            return provider.get_available_dates()
+        except Exception:
+            return []  # will display "No data" in UI; debug logs should explain failure
+
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request):
         """Serve the main HTML page (only when serve_ui is True)."""
@@ -87,12 +103,17 @@ if settings.serve_ui:
             )
 
         dates_raw = get_loaded_dates()
-        dates_display = [
-            datetime.strptime(d, "%Y%m%d").strftime("%d/%m/%Y") for d in dates_raw
-        ]
-        dates_display_iso = [
-            datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
-        ]
+        if not dates_raw and settings.use_database:
+            # DB backend but no dates known yet - UI should show load controls
+            dates_display = []
+            dates_display_iso = []
+        else:
+            dates_display = [
+                datetime.strptime(d, "%Y%m%d").strftime("%d/%m/%Y") for d in dates_raw
+            ]
+            dates_display_iso = [
+                datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
+            ]
 
         return templates.TemplateResponse(
             "index.html",

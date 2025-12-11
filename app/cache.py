@@ -92,12 +92,5 @@ class AppState:
         self._ready = True
 
 
-def get_loaded_dates() -> list[str]:
-    """Get the list of actually loaded dates from the preloaded data."""
-    if cache.all_data is None:
-        return []
-    return sorted(cache.all_data.keys())
-
-
 # Global cache instance
 cache = DataCache()

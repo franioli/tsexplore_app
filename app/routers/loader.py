@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 
@@ -28,8 +30,6 @@ async def load_range(
     # quick validation of dates
     try:
         # will raise ValueError if invalid
-        from datetime import datetime
-
         for s in (start_date, end_date):
             if "-" in s:
                 datetime.strptime(s, "%Y-%m-%d")
