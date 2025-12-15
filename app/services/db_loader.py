@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from ..cache import cache
 from ..config import get_settings
-from .provider import DataProvider
+from .data_provider import DataProvider
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

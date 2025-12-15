@@ -10,7 +10,7 @@ from PIL import Image
 from ..cache import cache
 from ..config import get_logger, get_settings
 from ..services.plots import make_velocity_map_figure
-from ..services.provider import get_data_provider
+from ..services.data_provider import get_data_provider
 
 logger = get_logger()
 settings = get_settings()
@@ -83,7 +83,10 @@ def _get_cached_image(
 
 @router.get("/")
 async def velocity_map(
-    date: str = Query(..., description="Date in YYYYMMDD format"),
+    date: str = Query(..., description="Slave date in YYYYMMDD format"),
+    dt_days: int | None = Query(None, ge=0, description="Select record by dt_days"),
+    master_date: str | None = Query(None, description="Master date in YYYYMMDD format"),
+    prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days"),
     use_velocity: bool = Query(True),
     cmin: float | None = Query(None, ge=0),
     cmax: float | None = Query(None, ge=0),
@@ -100,22 +103,28 @@ async def velocity_map(
     """Create map for a given date."""
     logger.info(f"map: date={date} use_velocity={use_velocity}")
 
+    # Get data provider
     provider = get_data_provider()
-    raw = provider.get_dic_data(date)
 
+    # Fetch DIC data
+    raw = provider.get_dic_data(
+        date, dt_days=dt_days, master_date=master_date, prefer_dt_days=prefer_dt_days
+    )
     if not raw:
-        raise HTTPException(status_code=404, detail=f"No data for date {date}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No data for slave date {date} (dt_days={dt_days}, master={master_date})",
+        )
 
+    # Prepare data for plotting
     x, y = raw["x"], raw["y"]
     dt_days = raw.get("dt_days")
     mag = raw["V"] if use_velocity else raw["disp_mag"]
     units = "velocity (px/day)" if use_velocity else "displacement (px)"
-
     try:
         date_display = datetime.strptime(date, "%Y%m%d").strftime("%d/%m/%Y")
     except ValueError:
         date_display = date
-
     metadata = {
         "Date": date_display,
         "dt (days)": dt_days or "N/A",

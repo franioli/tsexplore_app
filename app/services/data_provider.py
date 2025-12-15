@@ -1,7 +1,7 @@
 """Data provider interface and factory."""
 
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -16,17 +16,19 @@ class DataProvider(Protocol):
         """Return list of available dates in YYYYMMDD format."""
         ...
 
-    def get_dic_data(self, date: str) -> dict[str, np.ndarray] | None:
-        """
-        Get DIC data for a specific date.
-
-        Returns:
-            Dictionary with keys: x, y, dx, dy, disp_mag, u, v, V,
-            ensamble_mad, dt_hours, dt_days
-        """
+    def get_dic_data(
+        self,
+        reference_date: str,
+        *,
+        dt_days: int | None = None,
+        initial_date: str | None = None,
+        prefer_dt_days: int | None = None,
+        prefer_dt_tolerance: int | None = None,
+    ) -> dict[str, Any] | None:
+        """Return DIC payload for a reference date with optional interval selection."""
         ...
 
-    def load_all(self) -> dict[str, dict]:
+    def load_all(self) -> int:
         """Load all available DIC data into memory."""
         ...
 
@@ -35,7 +37,7 @@ class DataProvider(Protocol):
         start_date: str,
         end_date: str,
         progress_callback: Callable[[int, int], None] | None = None,
-    ) -> dict[str, dict]:
+    ) -> int:
         """
         Load DIC data for the desired date range.
         progress_callback(done, total) is called for progress updates.

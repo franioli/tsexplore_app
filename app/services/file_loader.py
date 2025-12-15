@@ -1,4 +1,15 @@
-"""File-based DIC data provider."""
+"""File-based DIC data provider.
+
+This module implements a file-backed DataProvider that loads *one cache record per file*.
+
+Key points
+- A single "slave day" (YYYYMMDD) may have multiple DIC results (different dt / master date).
+- Records are stored in the global cache with metadata (master_date, slave_date, dt).
+- Selection for a given slave day is done via cache.find_record_id(...):
+  - exact dt_days, or
+  - (master_date, dt_days), or
+  - prefer_dt_days (closest), otherwise defaults to smallest dt_days.
+"""
 
 import logging
 import re
@@ -8,9 +19,9 @@ from pathlib import Path
 
 import numpy as np
 
-from ..cache import cache
+from ..cache import DicMeta, cache
 from ..config import get_settings
-from .provider import DataProvider
+from .data_provider import DataProvider
 
 logger = logging.getLogger(__name__)
 
@@ -19,35 +30,76 @@ class FileDataProvider(DataProvider):
     """Load DIC data from text files on disk."""
 
     def __init__(self):
+        """Initialize the file-backed provider."""
         self.settings = get_settings()
         self._data_cache = None
 
     def get_available_dates(self) -> list[str]:
-        """Scan directory for available dates."""
-        if self._data_cache is None:
-            raise ValueError("Data not loaded yet. Load data first.")
-        return sorted(self._data_cache.keys())
+        """Return available (loaded) slave dates.
 
-    def get_dic_data(self, date: str) -> dict | None:
-        """Get data for a specific date."""
-        data = self._data_cache or self.load_all()
-        if not data:
+        Returns:
+            A sorted list of slave dates as strings.
+
+        Raises:
+            ValueError: If data has not been loaded yet.
+        """
+        if not cache.is_loaded():
+            self.load_all()
+        return cache.get_available_dates()
+
+    def get_dic_data(
+        self,
+        reference_date: str,
+        *,
+        dt_days: int | None = None,
+        initial_date: str | None = None,
+        prefer_dt_days: int | None = None,
+        prefer_dt_tolerance: int | None = None,
+    ) -> dict | None:
+        """Get the DIC payload for a given reference day (final image date).
+
+        Args:
+            reference_date: Reference date in YYYYMMDD (final image date).
+            dt_days: If provided, select the record with this time interval (days).
+            initial_date: If provided, select by initial date (YYYYMMDD). Can be combined
+                with dt_days for an exact match.
+            prefer_dt_days: If provided, pick the record whose dt_days is closest.
+            prefer_dt_tolerance: Optional tolerance (days) for closest match.
+
+        Returns:
+            The payload dict for the selected record, or None if no matching record exists.
+        """
+        if not cache.is_loaded():
+            self.load_all()
+
+        rid = cache.find_record_id(
+            reference_yyyymmdd=reference_date,
+            initial_yyyymmdd=initial_date,
+            dt_days=dt_days,
+            prefer_dt_days=prefer_dt_days,
+            prefer_dt_tolerance=prefer_dt_tolerance,
+        )
+        if rid is None:
             return None
 
-        return data.get(date)
+        rec = cache.get_dic_record(rid)
+        if rec is None:
+            return None
+        _meta, payload = rec
+        return payload
 
-    def load_all(self) -> dict[str, dict]:
-        """load all DIC files from disk."""
-        # Use global cache if available
-        if cache.all_data is not None:
-            return cache.all_data
+    def load_all(self) -> int:
+        """Load all DIC files from disk into the global cache.
 
-        # Use instance cache if available
-        if self._data_cache is not None:
-            return self._data_cache
+        Returns:
+            The number of loaded records (one record per file).
+        """
+        if cache.is_loaded():
+            self._loaded = True
+            return cache.num_records
 
         s = self.settings
-        all_data = _load_all_from_disk(
+        n = _load_all_from_disk_into_cache(
             data_dir=s.data_dir,
             file_pattern=s.file_pattern,
             filename_pattern=s.filename_pattern,
@@ -55,100 +107,97 @@ class FileDataProvider(DataProvider):
             invert_y=s.invert_y,
             dt_days_preferred=getattr(s, "dt_days_preferred", None),
         )
-
-        cache.all_data = all_data
-        self._data_cache = all_data
-        return all_data
+        self._loaded = True
+        return n
 
     def load_range(
         self,
         start_date: str,
         end_date: str,
         progress_callback: Callable[[int, int], None] | None = None,
-    ) -> dict[str, dict]:
-        """Load only the dates in the requested range (files)."""
-        all_data = self.load_all()
-        filtered = _filter_data_by_date_range(
-            all_data=all_data,
-            start_date=start_date,
-            end_date=end_date,
-            progress_callback=progress_callback,
-        )
+    ) -> int:
+        """Load only the dates in the requested range (files).
 
-        # cache the filtered set (keeps current behavior)
-        cache.all_data = filtered
-        self._data_cache = filtered
-        return filtered
+        Args:
+            start_date: Start date (inclusive).
+            end_date: End date (inclusive).
+            progress_callback: Optional callback receiving ``(done, total)``.
+
+        Returns:
+            Number of loaded records.
+        """
+        raise NotImplementedError("FileDataProvider does not support load_range()")
 
     def get_coordinates(self) -> np.ndarray:
-        """Get coordinate array from first available date."""
+        """Get coordinate array from the first loaded record.
 
-        # Ensure data is loaded
-        all_data = self._data_cache or self.load_all()
-        if not all_data:
+        Returns:
+            (N, 2) array with columns [x, y].
+
+        Raises:
+            ValueError: If no data is available.
+        """
+        if not cache.is_loaded():
+            self.load_all()
+
+        if cache.num_records == 0:
             raise ValueError("No data available")
 
-        first_date = next(iter(all_data.keys()))
-        first_data = all_data[first_date]
-        return np.column_stack([first_data["x"], first_data["y"]])
+        # Pick the first record_id deterministically
+        first_id = sorted(cache.dic_records.keys())[0]
+        rec = cache.get_dic_record(first_id)
+        if rec is None:
+            raise ValueError("No data available")
 
-
-def _filter_data_by_date_range(
-    *,
-    all_data: dict[str, dict],
-    start_date: str,
-    end_date: str,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> dict[str, dict]:
-    """Filter a date-keyed dict by [start_date, end_date] (inclusive)."""
-
-    def _to_dateobj(datestring: str):
-        """Parse YYYYMMDD or YYYY-MM-DD into a date."""
-        if "-" in datestring:
-            return datetime.strptime(datestring, "%Y-%m-%d").date()
-        return datetime.strptime(datestring, "%Y%m%d").date()
-
-    start_obj = _to_dateobj(start_date)
-    end_obj = _to_dateobj(end_date)
-
-    dates = sorted(all_data.keys())
-    selected_dates = [
-        d
-        for d in dates
-        if start_obj <= datetime.strptime(d, "%Y%m%d").date() <= end_obj
-    ]
-
-    total = len(selected_dates)
-    done = 0
-
-    out: dict[str, dict] = {}
-    for d in selected_dates:
-        out[d] = all_data[d]
-        done += 1
-        if progress_callback:
-            progress_callback(done, total)
-
-    return out
+        _meta, payload = rec
+        return np.column_stack([payload["x"], payload["y"]])
 
 
 def _parse_filename(
     file_path: Path, *, filename_pattern: str, date_format: str
 ) -> tuple[datetime, datetime]:
-    """Parse slave/master dates from filename."""
+    """Parse initial/final dates from a DIC filename.
+
+    The reference date used by the app is the FINAL image date.
+
+    Args:
+        file_path: Path to the file.
+        filename_pattern: Regex pattern that extracts initial and final date strings as the first two capture groups.
+        date_format: datetime.strptime format for the captured date strings.
+
+    Returns:
+        Tuple (final_date, initial_date).
+
+    Raises:
+        ValueError: If the filename does not match the expected pattern.
+    """
     pattern = re.compile(filename_pattern)
     match = pattern.search(file_path.name)
     if not match or len(match.groups()) < 2:
         raise ValueError(f"Invalid filename: {file_path.name}")
 
-    slave_str = match.group(1)
-    master_str = match.group(2)
-    slave_date = datetime.strptime(slave_str, date_format)
-    master_date = datetime.strptime(master_str, date_format)
-    return slave_date, master_date
+    final_str = match.group(1)
+    initial_str = match.group(2)
+    final_date = datetime.strptime(final_str, date_format)
+    initial_date = datetime.strptime(initial_str, date_format)
+
+    return final_date, initial_date
 
 
 def _read_txt(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
-    """Read a DIC text file."""
+    """Read a DIC text file.
+
+    Args:
+        file_path: Path to the ``.txt`` file.
+        invert_y: Whether to invert the y-axis (and dy) sign.
+
+    Returns:
+        A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
+        ``ensamble_mad``.
+
+    Raises:
+        ValueError: If the file is empty.
+    """
     data = np.loadtxt(
         file_path,
         delimiter=",",
@@ -182,7 +231,16 @@ def _read_txt(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
 
 
 def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
-    """Read a DIC HDF5 file."""
+    """Read a DIC HDF5 file.
+
+    Args:
+        file_path: Path to the ``.h5`` file.
+        invert_y: Whether to invert the y-axis (and dy) sign.
+
+    Returns:
+        A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
+        ``ensamble_mad``.
+    """
     import h5py
 
     with h5py.File(file_path, "r") as f:
@@ -211,7 +269,20 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
 
 
 def _read_dic_file(file_path: Path, *, invert_y: bool) -> dict[str, np.ndarray]:
-    """Read a DIC file based on its extension."""
+    """Read a DIC file based on its extension.
+
+    Args:
+        file_path: Path to the DIC file.
+        invert_y: Whether to invert the y-axis (and dy) sign.
+
+    Returns:
+        A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
+        ``ensamble_mad``.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file extension is unsupported.
+    """
     file_path = Path(file_path)
     if not file_path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -225,7 +296,7 @@ def _read_dic_file(file_path: Path, *, invert_y: bool) -> dict[str, np.ndarray]:
     raise ValueError(f"Unsupported file format: {file_path.suffix}")
 
 
-def _load_all_from_disk(
+def _load_all_from_disk_into_cache(
     *,
     data_dir: str | Path,
     file_pattern: str,
@@ -234,43 +305,52 @@ def _load_all_from_disk(
     invert_y: bool,
     dt_days_preferred: int | None,
     dt_days_tolerance: int = 1,
-) -> dict[str, dict]:
-    """Load all DIC files from disk into a date-keyed dict."""
-    logger.info("Loading DIC files from disk")
+) -> int:
+    """Load all DIC files from disk into the global cache (one record per file).
+
+    Args:
+        data_dir: Root directory containing DIC files.
+        file_pattern: Glob pattern used to list files (e.g. ``"*.txt"``).
+        filename_pattern: Regex pattern extracting slave/master date strings.
+        date_format: Format string for parsing the extracted date strings.
+        invert_y: Whether to invert the y-axis (and dy) sign.
+        dt_days_preferred: If set (> 0), keep only records within ``dt_days_tolerance``
+            from the preferred dt. If ``None``, all records are kept.
+        dt_days_tolerance: Allowed absolute deviation from ``dt_days_preferred`` in days.
+
+    Returns:
+        Number of loaded records stored into the global cache.
+    """
+    logger.info("Loading DIC files from disk..")
     data_path = Path(data_dir)
     files = sorted(data_path.glob(file_pattern))
 
-    all_data: dict[str, dict] = {}
+    record_id = 0
+    loaded = 0
+
     for f in files:
         try:
-            slave_date, master_date = _parse_filename(
+            final_date, initial_date = _parse_filename(
                 f, filename_pattern=filename_pattern, date_format=date_format
             )
-            date_str = slave_date.strftime(date_format)
-
-            # Skip duplicates
-            if date_str in all_data:
-                continue
 
             # Compute time difference
-            dt_hours = int(abs((slave_date - master_date).total_seconds()) / 3600)
+            dt_hours = int(abs((final_date - initial_date).total_seconds()) / 3600)
             dt_days = int(dt_hours / 24)
 
-            # If a preferred dt is set, filter by it (within tolerance). If None, keep all.
-            if dt_days_preferred is not None and dt_days_preferred > 0:
-                skip_file = abs(dt_days - int(dt_days_preferred)) > max(
+            # Optional filtering by preferred dt
+            if dt_days_preferred is not None and int(dt_days_preferred) > 0:
+                if abs(dt_days - int(dt_days_preferred)) > max(
                     0, int(dt_days_tolerance)
-                )
-                if skip_file:
+                ):
                     continue
 
-            # Read DIC data from file
             dic_data = _read_dic_file(f, invert_y=invert_y)
             dx = dic_data["dx"]
             dy = dic_data["dy"]
             disp_mag = dic_data["magnitude"]
 
-            # Compute velocity (px/day) for dt > 24h, otherwise keep displacement as-is
+            # Compute velocity (px/day) if dt > 24h, otherwise keep displacement as-is
             if dt_hours > 24:
                 scale = 24.0 / dt_hours
                 u_vel = dx * scale
@@ -281,7 +361,16 @@ def _load_all_from_disk(
                 v_vel = dy
                 V_vel = disp_mag
 
-            all_data[date_str] = {
+            record_id += 1
+            meta = DicMeta(
+                record_id=record_id,
+                initial_date=initial_date,
+                final_date=final_date,
+                dt_hours=dt_hours,
+                dt_days=dt_days,
+            )
+
+            payload = {
                 "x": dic_data["x"],
                 "y": dic_data["y"],
                 "dx": dx,
@@ -293,11 +382,18 @@ def _load_all_from_disk(
                 "ensamble_mad": dic_data["ensamble_mad"],
                 "dt_hours": dt_hours,
                 "dt_days": dt_days,
+                # keep dates in payload too (handy for API responses/metadata)
+                "initial_date": initial_date.strftime("%Y%m%d"),
+                "final_date": final_date.strftime("%Y%m%d"),
+                "reference_date": final_date.strftime("%Y%m%d"),
             }
+
+            cache.store_dic_record(meta=meta, payload=payload)
+            loaded += 1
 
         except Exception as e:
             logger.debug(f"Skipping {f.name}: {e}")
             continue
 
-    logger.info(f"Loaded {len(all_data)} DIC files from disk")
-    return all_data
+    logger.info(f"Loaded {loaded} DIC files from disk (records={cache.num_records})")
+    return loaded

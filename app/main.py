@@ -25,10 +25,15 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 def get_loaded_dates() -> list[str]:
-    """Return dates from cache if present, otherwise from provider."""
-    # Use cached preloaded range (DB) if present
-    if cache.all_data:
-        return sorted(cache.all_data.keys())
+    """Return dates from cache if present, otherwise from provider.
+
+    Returns:
+        A sorted list of slave dates as ``YYYYMMDD`` strings.
+    """
+    # Prefer cache (file backend preloads at startup; DB range loader may also fill cache)
+    if cache.is_loaded():
+        return cache.get_available_dates()
+
     # Fallback to provider's available dates (reads DB or lists files)
     provider = get_data_provider()
     try:
@@ -50,11 +55,10 @@ async def lifespan(app: FastAPI):
         # If not using DB backend preload all data and build spatial index
         if not settings.use_database:
             logger.info("Non-DB backend detected - preloading all data")
-            all_data = provider.load_all()
-            logger.info(f"Preloaded {len(all_data)} DIC records")
-
+            loaded_count = provider.load_all()
             tree, coords = build_kdtree(provider)
-            logger.info(f"Built KDTree with {len(coords)} nodes")
+            logger.info(f"Preloaded {loaded_count} DIC records and built spatial index")
+
         else:
             # Load only one sample day to display correctly the ui,
 

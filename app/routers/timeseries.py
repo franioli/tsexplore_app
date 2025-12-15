@@ -1,14 +1,15 @@
 import json
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ..config import get_logger, get_settings
+from ..services.data_provider import DataProvider, get_data_provider
 from ..services.inversion import invert_node2, load_dic_data
 from ..services.plots import make_timeseries_figure
-from ..services.provider import get_data_provider
 from ..services.spatial import build_kdtree
 
 logger = get_logger()
@@ -30,22 +31,58 @@ async def timeseries(
     ymax: float | None = Query(None),
     show_error_band: bool = Query(False),
     ts_inversion: bool = Query(False),
+    dt_days: int | None = Query(None, ge=0, description="Select record by dt_days"),
+    prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days"),
+    prefer_dt_tolerance: int | None = Query(
+        None, ge=0, description="Tolerance (days) for closest dt"
+    ),
 ):
-    """Return timeseries figure for a node and optional inversion overlay."""
-    logger.info(f"timeseries: node=({node_x},{node_y}) inversion={ts_inversion}")
+    """Return timeseries figure for a node and optional inversion overlay.
+
+    Args:
+        node_x: Query x coordinate.
+        node_y: Query y coordinate.
+        use_velocity: If True, plot velocity components; otherwise plot displacement.
+        components: Comma-separated list of components to plot (e.g. "u,v,V").
+        marker_mode: Plotly scatter mode (e.g. "lines+markers").
+        xmin_date: Optional minimum date bound (passed to plotting).
+        xmax_date: Optional maximum date bound (passed to plotting).
+        ymin: Optional y-axis minimum.
+        ymax: Optional y-axis maximum.
+        show_error_band: If True, add an error band if available.
+        ts_inversion: If True, attempt inversion overlay (local data only).
+        dt_days: If provided, select only records with this dt (days) for each slave date.
+        prefer_dt_days: If provided, pick the closest dt (days) per slave date.
+        prefer_dt_tolerance: Optional tolerance (days) for closest dt.
+
+    Returns:
+        A Plotly figure JSON response.
+
+    Raises:
+        HTTPException: If no timeseries data is available for the requested node.
+    """
+    logger.info("timeseries: node=(%s,%s) inversion=%s", node_x, node_y, ts_inversion)
 
     provider = get_data_provider()
-    all_data = provider.load_all()
+    dates_available = provider.get_available_dates()
 
-    # Build time series for this node across all dates
-    ts = _extract_node_timeseries(all_data, node_x, node_y, provider)
+    ts = _extract_node_timeseries(
+        dates=dates_available,
+        node_x=node_x,
+        node_y=node_y,
+        provider=provider,
+        dt_days=dt_days,
+        prefer_dt_days=prefer_dt_days,
+        prefer_dt_tolerance=prefer_dt_tolerance,
+    )
 
     if not ts or not ts.get("dates"):
         raise HTTPException(status_code=404, detail="No timeseries data for node")
 
     # core plotting inputs
     dates = [datetime.strptime(d, "%Y%m%d") for d in ts["dates"]]
-    comp_list = [c.strip() for c in components.split(",")]
+    comp_list = [c.strip() for c in components.split(",") if c.strip()]
+
     if use_velocity:
         u = np.array(ts["u"])
         v = np.array(ts["v"])
@@ -63,7 +100,17 @@ async def timeseries(
         else None
     )
 
-    metadata = {"Node": f"({node_x:.1f},{node_y:.1f})", "N dates": len(dates)}
+    metadata: dict[str, Any] = {
+        "Node": f"({node_x:.1f},{node_y:.1f})",
+        "N dates": len(dates),
+    }
+    if dt_days is not None:
+        metadata["dt (days)"] = int(dt_days)
+    elif prefer_dt_days is not None:
+        metadata["prefer dt (days)"] = int(prefer_dt_days)
+    if master_date is not None:
+        metadata["master"] = master_date
+
     if "V" in comp_list:
         metadata["Mean |v|"] = float(np.mean(V))
         metadata["Std |v|"] = float(np.std(V))
@@ -93,13 +140,11 @@ async def timeseries(
             "Performing time-series inversion works only on local data. Working on db is not implemented yet."
         )
         try:
-            # Build KDTree and find node
             tree, coords = build_kdtree(provider)
             dist, idx = tree.query([node_x, node_y], k=1)
             if not np.isfinite(dist):
                 raise RuntimeError("node not found in KDTree")
 
-            # load full dic data and locate node
             try:
                 dic = load_dic_data(settings.data_dir)
             except FileNotFoundError as e:
@@ -145,36 +190,53 @@ async def timeseries(
                 )
 
         except Exception as e:
-            logger.error(f"Inversion overlay error: {e}")
+            logger.error("Inversion overlay error: %s", e)
 
     return JSONResponse(json.loads(fig.to_json()))
 
 
 def _extract_node_timeseries(
-    all_data: dict[str, dict],
+    *,
+    dates: list[str],
     node_x: float,
     node_y: float,
-    provider,
-) -> dict:
-    """
-    Extract time series for a specific node across all dates.
+    provider: DataProvider,
+    dt_days: int | None = None,
+    prefer_dt_days: int | None = None,
+    prefer_dt_tolerance: int | None = None,
+) -> dict[str, list[Any]]:
+    """Extract a node time series across available slave dates.
 
-    Uses KDTree to find nearest node index, then extracts data for that index
-    across all dates.
+    Uses a KDTree to find the nearest node index, then for each slave date
+    fetches the selected DIC record via `provider.get_dic_data(...)` and extracts
+    the values at that index.
+
+    Args:
+        dates: Available slave dates as `YYYYMMDD`.
+        node_x: Query x coordinate.
+        node_y: Query y coordinate.
+        provider: Active data provider (file or database).
+        dt_days: Optional exact dt (days) selection per slave date.
+        prefer_dt_days: Optional preferred dt (days) selection per slave date.
+        prefer_dt_tolerance: Optional tolerance (days) for closest dt.
+
+    Returns:
+        A dict of lists with keys:
+          `dates, dx, dy, disp_mag, u, v, V, ensamble_mad`.
+        Returns an empty dict if no data is available.
     """
-    if not all_data:
+    if not dates:
         return {}
 
-    # Build KDTree to find node
-    tree, coords = build_kdtree(provider)
+    # Build KDTree to find nearest node index (coordinate set is shared across records)
+    tree, _coords = build_kdtree(provider)
     dist, idx = tree.query([node_x, node_y], k=1)
 
     if not np.isfinite(dist):
-        logger.warning(f"Node ({node_x}, {node_y}) not found in KDTree")
+        logger.warning("Node (%s, %s) not found in KDTree", node_x, node_y)
         return {}
 
-    # Extract time series
-    ts = {
+    ts: dict[str, list[Any]] = {
         "dates": [],
         "dx": [],
         "dy": [],
@@ -185,15 +247,25 @@ def _extract_node_timeseries(
         "ensamble_mad": [],
     }
 
-    for date_str in sorted(all_data.keys()):
-        data = all_data[date_str]
+    for date_str in sorted(dates):
+        data = provider.get_dic_data(
+            date_str,
+            dt_days=dt_days,
+            prefer_dt_days=prefer_dt_days,
+            prefer_dt_tolerance=prefer_dt_tolerance,
+        )
+        if not data:
+            continue
+
         ts["dates"].append(date_str)
-        ts["dx"].append(data["dx"][idx])
-        ts["dy"].append(data["dy"][idx])
-        ts["disp_mag"].append(data["disp_mag"][idx])
-        ts["u"].append(data["u"][idx])
-        ts["v"].append(data["v"][idx])
-        ts["V"].append(data["V"][idx])
-        ts["ensamble_mad"].append(data["ensamble_mad"][idx])
+        ts["dx"].append(float(data["dx"][idx]))
+        ts["dy"].append(float(data["dy"][idx]))
+        ts["disp_mag"].append(float(data["disp_mag"][idx]))
+        ts["u"].append(float(data["u"][idx]))
+        ts["v"].append(float(data["v"][idx]))
+        ts["V"].append(float(data["V"][idx]))
+
+        em = data.get("ensamble_mad")
+        ts["ensamble_mad"].append(float(em[idx]) if em is not None else 0.0)
 
     return ts

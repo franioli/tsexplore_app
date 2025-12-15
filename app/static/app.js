@@ -19,6 +19,67 @@ function displayToIso(displayDate) {
 }
 
 
+function getDtSelectionParams() {
+  const modeEl = document.getElementById("dt-mode");
+  const dtEl = document.getElementById("dt-days");
+  const tolEl = document.getElementById("dt-tolerance");
+
+  if (!modeEl || !dtEl || !tolEl) return {};
+
+  const mode = (modeEl.value || "auto").toLowerCase();
+  const dtRaw = (dtEl.value || "").trim();
+  const tolRaw = (tolEl.value || "").trim();
+
+  // Auto -> no params
+  if (mode === "auto") return {};
+
+  // Exact dt_days
+  if (mode === "exact") {
+    if (!dtRaw) return {};
+    return { dt_days: dtRaw };
+  }
+
+  // Closest prefer_dt_days within tolerance
+  if (mode === "closest") {
+    if (!dtRaw) return {};
+    const out = { prefer_dt_days: dtRaw };
+    if (tolRaw !== "") out["prefer_dt_tolerance"] = tolRaw;
+    return out;
+  }
+
+  return {};
+}
+
+function applyDtParams(url) {
+  const p = getDtSelectionParams();
+  for (const [k, v] of Object.entries(p)) url.searchParams.set(k, v);
+}
+
+// Keep dt inputs enabled/disabled based on mode
+function syncDtControls() {
+  const modeEl = document.getElementById("dt-mode");
+  const dtEl = document.getElementById("dt-days");
+  const tolEl = document.getElementById("dt-tolerance");
+  if (!modeEl || !dtEl || !tolEl) return;
+
+  const mode = (modeEl.value || "auto").toLowerCase();
+  if (mode === "auto") {
+    dtEl.disabled = true;
+    tolEl.disabled = true;
+    return;
+  }
+  if (mode === "exact") {
+    dtEl.disabled = false;
+    tolEl.disabled = true;
+    return;
+  }
+  if (mode === "closest") {
+    dtEl.disabled = false;
+    tolEl.disabled = false;
+    return;
+  }
+}
+
 async function startLoadRange() {
   if (!USE_DATABASE || !document.getElementById("load-start-picker") || !document.getElementById("load-end-picker")) {
     alert("Load range only available for database backend.");
@@ -80,12 +141,13 @@ async function startLoadRange() {
   }, 1000);
 }
 
+
 async function fetchVelocityMap() {
   if (!window.currentDate) {
     console.log("No current date set, skipping velocity map fetch");
     return;
   }
-  
+
   const useVelocity = document.getElementById("use-velocity").checked;
   const plotType = document.getElementById("plot-type").value || "scatter";
   const cmin = document.getElementById("cmin").value || null;
@@ -93,9 +155,9 @@ async function fetchVelocityMap() {
   const colorscale = document.getElementById("colorscale").value;
   const markerSize = document.getElementById("marker-size").value || 6;
   const markerOpacity = document.getElementById("marker-opacity").value || 0.7;
-  
+
   const url = new URL("/api/velocity-map", window.location.origin);
-  url.searchParams.set("date", window.currentDate);
+  url.searchParams.set("reference_date", window.currentDate);
   url.searchParams.set("use_velocity", useVelocity);
   url.searchParams.set("plot_type", plotType);
   if (cmin) url.searchParams.set("cmin", cmin);
@@ -104,7 +166,10 @@ async function fetchVelocityMap() {
   url.searchParams.set("marker_size", markerSize);
   url.searchParams.set("marker_opacity", markerOpacity);
   url.searchParams.set("downsample_points", 5000);
-  
+
+  // NEW: dt selection
+  applyDtParams(url);
+
   if (window.selectedNode) {
     url.searchParams.set("selected_x", window.selectedNode.x);
     url.searchParams.set("selected_y", window.selectedNode.y);
@@ -135,11 +200,14 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
 
   try {
     const urlNearest = new URL("/api/nearest", window.location.origin);
-    urlNearest.searchParams.set("date", window.currentDate);
+    urlNearest.searchParams.set("reference_date", window.currentDate);
     urlNearest.searchParams.set("x", x);
     urlNearest.searchParams.set("y", y);
     urlNearest.searchParams.set("radius", radius);
     
+    // dt selection
+    applyDtParams(urlNearest);
+
     const resN = await fetch(urlNearest);
     if (!resN.ok) {
       alert("No node within radius");
@@ -178,8 +246,11 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
     if (xmaxDate) urlTS.searchParams.set("xmax_date", xmaxDate);
     if (ymin) urlTS.searchParams.set("ymin", ymin);
     if (ymax) urlTS.searchParams.set("ymax", ymax);
-        
-    // Debug: Log the full URL
+
+    // dt selection
+    applyDtParams(urlTS);
+
+    // Deug: Log the full URL
     console.log("Time series URL:", urlTS.toString());
 
     const resTS = await fetch(urlTS);
@@ -275,6 +346,32 @@ document.getElementById("ymax").addEventListener("input", () => {
 });
 document.getElementById("error-band").addEventListener("change", () => {
   if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+});
+
+// NEW: dt controls listeners
+document.getElementById("dt-mode").addEventListener("change", () => {
+  syncDtControls();
+  if (window.currentDate) {
+    fetchVelocityMap();
+    if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+  }
+});
+document.getElementById("dt-days").addEventListener("input", () => {
+  if (window.currentDate) {
+    fetchVelocityMap();
+    if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+  }
+});
+document.getElementById("dt-tolerance").addEventListener("input", () => {
+  if (window.currentDate) {
+    fetchVelocityMap();
+    if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+  }
+});
+
+// Ensure initial state matches default selection
+document.addEventListener("DOMContentLoaded", () => {
+  syncDtControls();
 });
 
 // Attach TS inversion button click handler

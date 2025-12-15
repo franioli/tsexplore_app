@@ -157,12 +157,10 @@
 
       <!-- Plot Date -->
       <div class="control-group">
-        <label class="control-label">Select Date</label>
-        <!-- <div style="display: flex; gap: 4px; align-items: center;">
-          <button id="prev-date" style="padding: 6px 12px; flex-shrink: 0;" title="Previous date">◀</button>
-          <input type="text" id="date-picker" placeholder="Select date..." style="flex: 1;" />
-          <button id="next-date" style="padding: 6px 12px; flex-shrink: 0;" title="Next date">▶</button>
-        </div> -->
+        <label class="control-label">Select Reference Date</label>
+        <div style="font-size:12px;color:#6c757d;">
+          Reference date = <b>final image date</b> used for the DIC computation.
+        </div>
         <div style="gap: 4px; align-items: center;">
           <button id="prev-date" style="padding: 6px 12px;" title="Previous date">◀</button>
           <input type="text" id="date-picker" placeholder="Select date..." />
@@ -170,6 +168,25 @@
         </div>
         <input type="hidden" id="date-raw" value="{{ dates_raw[0] if dates_raw else '' }}" />
       </div>
+
+      <!-- DIC interval selection -->
+      <div class="control-group">
+        <label class="control-label">DIC interval (dt)</label>
+        <select id="dt-mode">
+          <option value="auto" selected>Auto</option>
+          <option value="exact">Exact dt (days)</option>
+          <option value="closest">Closest dt (days) within tolerance</option>
+        </select>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input type="number" id="dt-days" step="1" min="0" placeholder="dt days" style="width: 110px;" disabled />
+          <input type="number" id="dt-tolerance" step="1" min="0" placeholder="± tol" style="width: 90px;" disabled />
+        </div>
+        <div style="font-size:12px;color:#6c757d;">
+          Use <code>Auto</code> or request a specific interval. Tolerance is used only for “Closest”.
+        </div>
+      </div>
+
+
       <div class="control-group">
         <label class="control-label">Plot Type</label>
         <select id="plot-type">

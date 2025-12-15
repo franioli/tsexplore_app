@@ -9,9 +9,9 @@ file_pattern: "*.txt"
 
 # Regex pattern to extract dates from filenames (must have 2 capture groups)
 # Examples:
-# - day_dic_20230101-20230104.txt -> day_dic_(\d{8})-(\d{8})
-# - dic_20230101_20230104.txt -> dic_(\d{8})_(\d{8})
-# - 20230101-20230104.txt -> (\d{8})-(\d{8})
+# - day_dic_20230104-20230101.txt -> day_dic_(\d{8})-(\d{8})
+# - dic_20230104-20230101.txt -> dic_(\d{8})_(\d{8})
+# - 20230104-20230101.txt -> (\d{8})-(\d{8})
 filename_pattern: 'day_dic_(\d{8})-(\d{8})'
 
 # Date format in filenames
