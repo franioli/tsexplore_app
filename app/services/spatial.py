@@ -103,7 +103,7 @@ def nearest_node(
         provider = get_data_provider()
 
     # Load all data once
-    all_data = provider.preload_all()
+    all_data = provider.load_all()
     if date not in all_data:
         logger.debug(f"nearest_node: date {date} not found in preloaded data")
         return None

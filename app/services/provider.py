@@ -26,24 +26,24 @@ class DataProvider(Protocol):
         """
         ...
 
-    def preload_all(self) -> dict[str, dict]:
-        """Preload all available DIC data into memory."""
+    def load_all(self) -> dict[str, dict]:
+        """Load all available DIC data into memory."""
         ...
 
-    def get_coordinates(self) -> np.ndarray:
-        """Get reference coordinate array (N, 2) for spatial indexing."""
-        ...
-
-    def preload_range(
+    def load_range(
         self,
         start_date: str,
         end_date: str,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, dict]:
         """
-        Preload DIC data for the desired date range.
+        Load DIC data for the desired date range.
         progress_callback(done, total) is called for progress updates.
         """
+        ...
+
+    def get_coordinates(self) -> np.ndarray:
+        """Get reference coordinate array (N, 2) for spatial indexing."""
         ...
 
 

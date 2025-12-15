@@ -76,14 +76,14 @@ class DatabaseDataProvider(DataProvider):
                 rows = cur.fetchall()
                 return [r[0].strftime("%Y%m%d") for r in rows]
 
-    def preload_range(
+    def load_range(
         self,
         start_date: str,
         end_date: str,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, dict]:
         """
-        Preload DIC data for a given date range. Calls progress_callback(done,total).
+        Load DIC data for a given date range. Calls progress_callback(done,total).
         Fail fast (exceptions bubble).
         """
 
@@ -149,8 +149,8 @@ class DatabaseDataProvider(DataProvider):
 
         return all_data
 
-    def preload_all(self) -> dict[str, dict]:
-        """Preload all available DIC data into memory and cache it."""
+    def load_all(self) -> dict[str, dict]:
+        """Load all available DIC data into memory and cache it."""
         if cache.all_data is not None:
             return cache.all_data
         if self._data_cache is not None:
@@ -158,7 +158,7 @@ class DatabaseDataProvider(DataProvider):
 
         dates = self.get_available_dates()
         all_data: dict[str, dict] = {}
-        for d in tqdm(dates, desc="Preloading DIC data from DB"):
+        for d in tqdm(dates, desc="Loading DIC data from DB"):
             data = self.get_dic_data(d)
             if data is not None:
                 all_data[d] = data
@@ -169,8 +169,8 @@ class DatabaseDataProvider(DataProvider):
 
     def get_coordinates(self) -> np.ndarray:
         """Return Nx2 array of coordinates used to build KDTree."""
-        # rely on preload_all to fill cache; this will raise if there's no data
-        all_data = self.preload_all()
+        # rely on load_all to fill cache; this will raise if there's no data
+        all_data = self.load_all()
         if not all_data:
             raise RuntimeError("No DIC data available")
         first = next(iter(all_data.values()))

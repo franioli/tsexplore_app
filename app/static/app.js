@@ -1,11 +1,22 @@
-// Initialize global state
-let selectedNode = null;
-let currentDate = null;
-
 // Make these globally accessible
-window.currentDate = currentDate;
-window.selectedNode = selectedNode;
+window.currentDate = null;
+window.selectedNode = null;
 window.fetchVelocityMap = fetchVelocityMap;
+
+// Add date conversion helper functions (since we now only receive ISO dates)
+function isoToDisplay(isoDate) {
+  const [year, month, day] = isoDate.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function isoToRaw(isoDate) {
+  return isoDate.replace(/-/g, '');
+}
+
+function displayToIso(displayDate) {
+  const [day, month, year] = displayDate.split('/');
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
 
 
 async function startLoadRange() {
@@ -22,9 +33,7 @@ async function startLoadRange() {
   }
 
   const url = new URL("/api/loader/load-range", window.location.origin);
-  // format start/end using YYYYMMDD or use iso; both accepted by API
-  const params = { start_date: startDate, end_date: endDate };
-
+  
   const res = await fetch(url.toString() + `?start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`, {
     method: "POST",
   });
@@ -70,7 +79,6 @@ async function startLoadRange() {
     }
   }, 1000);
 }
-
 
 async function fetchVelocityMap() {
   if (!window.currentDate) {
@@ -148,8 +156,12 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
     const markerMode = document.getElementById("marker-mode").value;
     const showErrorBand = document.getElementById("error-band").checked;
 
-    const xminDate = document.getElementById("xmin-date-picker").value || null;
-    const xmaxDate = document.getElementById("xmax-date-picker").value || null;
+    // Convert display dates (DD/MM/YYYY) to ISO format (YYYY-MM-DD) for API
+    const xminDateDisplay = document.getElementById("xmin-date-picker").value || null;
+    const xmaxDateDisplay = document.getElementById("xmax-date-picker").value || null;
+    const xminDate = xminDateDisplay ? displayToIso(xminDateDisplay) : null;
+    const xmaxDate = xmaxDateDisplay ? displayToIso(xmaxDateDisplay) : null;
+    
     const ymin = document.getElementById("ymin").value || null;
     const ymax = document.getElementById("ymax").value || null;
 
@@ -182,7 +194,6 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
     console.error("Error fetching timeseries:", err);
   }
 }
-
 
 // Run TS inversion function
 async function runTSInversion() {
@@ -269,24 +280,33 @@ document.getElementById("error-band").addEventListener("change", () => {
 // Attach TS inversion button click handler
 document.getElementById("ts-inversion").addEventListener("click", runTSInversion);
 
-
 // wire the button on DOM ready
 document.addEventListener("DOMContentLoaded", () => {
   const btn = document.getElementById("load-data");
   if (btn) btn.addEventListener("click", startLoadRange);
 
-  // init datepickers for load range inputs using flatpickr and prefill values
-  if (typeof flatpickr !== "undefined" && document.getElementById("load-start-picker")) {
-    flatpickr("#load-start-picker", {
-      enable: datesIso,
-      dateFormat: "Y-m-d",
-      allowInput: true,
-    });
-    flatpickr("#load-end-picker", {
-      enable: datesIso,
-      dateFormat: "Y-m-d",
-      allowInput: true,
-    });
+  // init datepickers for load range inputs (DB mode only)
+  if (typeof flatpickr !== "undefined") {
+    const startEl = document.getElementById("load-start-picker");
+    const endEl = document.getElementById("load-end-picker");
+
+    if (startEl) {
+      flatpickr("#load-start-picker", {
+        enable: (typeof datesIso !== "undefined" ? datesIso : []),
+        dateFormat: "Y-m-d",
+        allowInput: true,
+        disableMobile: true,
+      });
+    }
+
+    if (endEl) {
+      flatpickr("#load-end-picker", {
+        enable: (typeof datesIso !== "undefined" ? datesIso : []),
+        dateFormat: "Y-m-d",
+        allowInput: true,
+        disableMobile: true,
+      });
+    }
   }
 
   // disable load controls when not using DB backend
@@ -298,16 +318,19 @@ document.addEventListener("DOMContentLoaded", () => {
     const b = document.getElementById("load-data");
     if (b) b.disabled = true;
   }
+});
 
 // Initial load - wait for DOM and date picker to be ready
 window.addEventListener("load", () => {
-  // Small delay to ensure flatpickr is initialized
   setTimeout(() => {
-    const dateRaw = document.getElementById("date-raw").value;
+    const dateRawEl = document.getElementById("date-raw");
+    const dateRaw = dateRawEl ? dateRawEl.value : null;
+
+    console.log("DEBUG: #date-raw =", dateRaw);
+
     if (dateRaw) {
       window.currentDate = dateRaw;
-      console.log("Initial load with date:", dateRaw);
       fetchVelocityMap();
     }
-  }, 100);
+  }, 200);
 });

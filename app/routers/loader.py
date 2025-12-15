@@ -19,7 +19,7 @@ async def load_range(
     end_date: str,
     background_tasks: BackgroundTasks,
 ):
-    """Start preloading a date range (DB backend only). Returns 202 and starts background task."""
+    """Start Loading a date range (DB backend only). Returns 202 and starts background task."""
     if not settings.use_database:
         raise HTTPException(
             status_code=400, detail="Load range is only available with DB backend."
@@ -46,7 +46,7 @@ async def load_range(
 
     def _do_load():
         try:
-            provider.preload_range(
+            provider.load_range(
                 start_date, end_date, progress_callback=progress_callback
             )
         except Exception as e:

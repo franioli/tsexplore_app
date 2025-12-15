@@ -28,14 +28,14 @@ class Settings(BaseSettings):
     api_port: int = 8080
 
     # Data paths
-    data_dir: Path = Path("./data/day_dic")
+    data_dir: Path = Path("./data/day_dic") 
     file_pattern: str = "*.txt"
     filename_pattern: str = r"day_dic_(\d{8})-(\d{8})"
-    background_image: str = ""
+    background_image: str | None = None  # Path to background image or None
     background_image_opacity: float = 1.0
 
     # Processing parameters
-    dt_days_preferred: int = 3
+    dt_days_preferred: int | None = None
     invert_y: bool = False
     date_format: str = "%Y%m%d"
     search_radius: float = 5.0

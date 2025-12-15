@@ -1,72 +1,12 @@
-import base64
 import logging
 from collections.abc import Sequence
 from datetime import datetime
-from io import BytesIO
 from typing import Any, Literal
 
 import numpy as np
-from PIL import Image
 from plotly import graph_objects as go
 
-from ..cache import cache
-
 logger = logging.getLogger(__name__)
-
-
-def _get_cached_image(
-    background_image_path: str | None,
-    max_dimension: int | None = None,
-) -> tuple[str | None, tuple[int, int] | None]:
-    """
-    Get cached base64 image data. Only computed once per path.
-    Returns (data_url, (width, height)) or (None, None).
-
-    The image can be optionally downscaled (max_dimension) to speed up plotting.
-    """
-    if not background_image_path:
-        logger.debug("No background image path provided")
-        return (None, None)
-
-    # Try cache first
-    data_url, size, raw_bytes = cache.get_image(background_image_path)
-    if data_url and size:
-        logger.debug(f"Using cached image: {background_image_path}")
-        return data_url, size
-
-    # Load and cache the image
-    try:
-        logger.info(f"Loading and caching background image: {background_image_path}")
-        img = Image.open(background_image_path)
-        w, h = img.size
-
-        # Downscale for speed if too large
-        if max_dimension and (w > max_dimension or h > max_dimension):
-            scale = max_dimension / max(w, h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            logger.info(f"Resizing image from {w}x{h} to {new_w}x{new_h}")
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            w, h = new_w, new_h
-
-        bio = BytesIO()
-        img.save(bio, format="PNG", optimize=True)
-        bio.seek(0)
-        raw = bio.read()
-        b64 = base64.b64encode(raw).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
-
-        # Store in cache (metadata + raw bytes)
-        cache.store_image(background_image_path, data_url, (w, h), raw)
-        logger.info(f"Cached background image: {w}x{h}, {len(b64) / 1024:.1f} KB")
-        return data_url, (w, h)
-
-    except FileNotFoundError:
-        logger.warning(f"Background image file not found: {background_image_path}")
-        return (None, None)
-    except Exception as e:
-        logger.error(f"Failed to load background image: {e}")
-        return (None, None)
 
 
 def _create_raster_grid(x, y, values):
@@ -103,11 +43,11 @@ def make_velocity_map_figure(
     cmax: float | None = None,
     colorscale: str = "Viridis",
     marker_size: int = 4,
-    marker_opacity: float = 1.0,
+    marker_opacity: float | str = 1.0,  # <-- allow "auto"
     downsample_points: int = 5000,
     selected_node: dict[str, float] | None = None,
     units: str = "velocity (px/day)",
-    background_image_path: str | None = None,
+    background_image: str | None = None,  # Plotly image source as data URL
     background_opacity: float = 1.0,
     metadata: dict[str, Any] | None = None,
 ) -> go.Figure:
@@ -160,18 +100,18 @@ def make_velocity_map_figure(
             "Standard deviation visualization not implemented in this version"
         )
 
-    # Optional cached background image (downscaled for speed, stretched to data extents)
-    img_src, img_size = _get_cached_image(background_image_path, max_dimension=2048)
     x_min, x_max = float(np.min(x)), float(np.max(x))
     y_min, y_max = float(np.min(y)), float(np.max(y))
-    if img_src and img_size:
+
+    # Background image is provided by the endpoint (already loaded/encoded/cached)
+    if background_image:
         fig.add_layout_image(
             dict(
-                source=img_src,
+                source=background_image,
                 xref="x",
                 yref="y",
                 x=x_min,
-                y=y_max,  # top-left corner (y is reversed)
+                y=y_min,  # top-left corner (y is reversed)
                 sizex=x_max - x_min,
                 sizey=y_max - y_min,
                 sizing="stretch",
@@ -193,21 +133,41 @@ def make_velocity_map_figure(
             y_plot = y
             mag_plot = mag
 
+        marker_kwargs: dict[str, Any] = dict(
+            color=mag_plot,
+            colorscale=colorscale,
+            cmin=cmin,
+            cmax=cmax,
+            colorbar=dict(title=f"|v|<br>{units}"),
+            size=marker_size,
+            line=dict(width=0),
+        )
+
+        trace_opacity: float | None = None
+
+        if isinstance(marker_opacity, str) and marker_opacity.lower() == "auto":
+            # Normalize magnitude to [0,1] for per-point opacity
+            vmax = float(cmax) if cmax is not None else np.max(mag_plot)
+            alpha = np.clip(mag_plot.astype(float) / vmax, 0.0, 1.0)
+
+            # Mask-out very small values completely (simple & effective)
+            alpha[alpha < 0.03] = 0.0
+
+            # Per-point opacity
+            marker_kwargs["opacity"] = alpha
+            trace_opacity = 1.0
+        else:
+            # Regular scalar opacity
+            marker_kwargs["opacity"] = float(marker_opacity)
+            trace_opacity = None  # let marker opacity drive
+
         fig.add_trace(
             go.Scattergl(
                 x=x_plot,
                 y=y_plot,
                 mode="markers",
-                marker=dict(
-                    color=mag_plot,
-                    colorscale=colorscale,
-                    cmin=cmin,
-                    cmax=cmax,
-                    colorbar=dict(title=f"|v|<br>{units}"),
-                    size=marker_size,
-                    opacity=marker_opacity,
-                    line=dict(width=0),
-                ),
+                marker=marker_kwargs,
+                opacity=trace_opacity,  # avoid overriding per-point alpha
                 hovertemplate="x=%{x:.0f}<br>y=%{y:.0f}<br>|v|=%{marker.color:.3f}<extra></extra>",
                 name="magnitude",
                 showlegend=False,
@@ -243,7 +203,7 @@ def make_velocity_map_figure(
                 y=[selected_node["y"]],
                 mode="markers",
                 marker=dict(
-                    size=16,
+                    size=18,
                     color="red",
                     symbol="x",
                     line=dict(width=2, color="white"),
@@ -295,8 +255,10 @@ def make_velocity_map_figure(
         yaxis=dict(range=y_range, showgrid=False),
         margin=dict(l=0, r=0, t=30, b=0),
         dragmode="pan",
-        template="plotly_white",
         hovermode="closest",
+        template="plotly_white",
+        plot_bgcolor="rgba(0,0,0,0)",  # helps background visibility
+        paper_bgcolor="rgba(0,0,0,0)",  # helps background visibility
     )
 
     # keep image coordinates: y increases downward

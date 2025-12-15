@@ -35,7 +35,7 @@ async def timeseries(
     logger.info(f"timeseries: node=({node_x},{node_y}) inversion={ts_inversion}")
 
     provider = get_data_provider()
-    all_data = provider.preload_all()
+    all_data = provider.load_all()
 
     # Build time series for this node across all dates
     ts = _extract_node_timeseries(all_data, node_x, node_y, provider)

@@ -126,7 +126,6 @@
   <div class="panel">
     <div class="panel-title">DIC Data Loading</div>
     <div class="controls-grid">
-      <!-- Data Loading -->
       <div class="control-group">
         <label class="control-label">Load range (DB only)</label>
         <div style="display:flex; gap:4px; align-items:center;">
@@ -137,17 +136,6 @@
         <progress id="load-progress" value="0" max="100" style="width:100%; display:none;"></progress>
         <div id="load-status" style="font-size:12px;color:#6c757d;"></div>
       </div>
-
-      <!-- Date -->
-      <div class="control-group">
-        <label class="control-label">Select Date</label>
-        <div style="display: flex; gap: 4px; align-items: center;">
-          <button id="prev-date" style="padding: 6px 12px; flex-shrink: 0;" title="Previous date">◀</button>
-          <input type="text" id="date-picker" placeholder="Select date..." style="flex: 1;" />
-          <button id="next-date" style="padding: 6px 12px; flex-shrink: 0;" title="Next date">▶</button>
-        </div>
-        <input type="hidden" id="date-raw" value="{{ dates_raw[0] if dates_raw else '' }}" />
-      </div>
       <div class="control-group">
         <label class="control-label">Use Velocity</label>
         <div class="checkbox-group">
@@ -156,7 +144,7 @@
         </div>
       </div>
       <div class="control-group">
-        <label class="control-label">Search Radius (px)</label>
+        <label class="control-label">Node search radius for ts plot (px)</label>
         <input type="number" id="radius" value="10" step="1" />
       </div>
     </div>
@@ -166,6 +154,22 @@
   <div class="panel">
     <div class="panel-title">Velocity Field</div>
     <div class="controls-grid">
+
+      <!-- Plot Date -->
+      <div class="control-group">
+        <label class="control-label">Select Date</label>
+        <!-- <div style="display: flex; gap: 4px; align-items: center;">
+          <button id="prev-date" style="padding: 6px 12px; flex-shrink: 0;" title="Previous date">◀</button>
+          <input type="text" id="date-picker" placeholder="Select date..." style="flex: 1;" />
+          <button id="next-date" style="padding: 6px 12px; flex-shrink: 0;" title="Next date">▶</button>
+        </div> -->
+        <div style="gap: 4px; align-items: center;">
+          <button id="prev-date" style="padding: 6px 12px;" title="Previous date">◀</button>
+          <input type="text" id="date-picker" placeholder="Select date..." />
+          <button id="next-date" style="padding: 6px 12px;" title="Next date">▶</button>
+        </div>
+        <input type="hidden" id="date-raw" value="{{ dates_raw[0] if dates_raw else '' }}" />
+      </div>
       <div class="control-group">
         <label class="control-label">Plot Type</label>
         <select id="plot-type">
@@ -185,7 +189,7 @@
       </div>
       <div class="control-group">
         <label class="control-label">V Min</label>
-        <input type="number" id="cmin" step="0.1" placeholder="Auto" />
+        <input type="number" id="cmin" step="0.1" value="0.5" />
       </div>
       <div class="control-group">
         <label class="control-label">V Max</label>
@@ -197,11 +201,23 @@
       </div>
       <div class="control-group">
         <label class="control-label">Marker Opacity</label>
-        <input type="number" id="marker-opacity" value="1.0" min="0.1" max="1" step="0.1" />
+        <!-- allow "auto" OR a numeric value -->
+        <input type="text" id="marker-opacity" value="auto" placeholder="auto or 0..1" inputmode="decimal"
+          autocomplete="off" list="marker-opacity-options" />
+        <datalist id="marker-opacity-options">
+          <option value="auto"></option>
+          <option value="0.1"></option>
+          <option value="0.2"></option>
+          <option value="0.3"></option>
+          <option value="0.5"></option>
+          <option value="0.7"></option>
+          <option value="1.0"></option>
+        </datalist>
+
+        <div style="font-size:12px;color:#6c757d;">
+          Use <code>auto</code> to fade low velocities, or set a fixed value in [0..1].
+        </div>
       </div>
-      <!-- <div class="control-group" style="justify-content: flex-end;">
-        <button id="refresh-plot" style="margin-top: auto;">Refresh Plot</button>
-      </div> -->
     </div>
   </div>
 
@@ -262,15 +278,25 @@
   <script>
     const USE_DATABASE = {{ 'true' if use_database else 'false' }};
     const datesIso = {{ dates_iso | tojson | safe }};
-    const datesRaw = {{ dates_raw | tojson | safe }};
-    const datesDisplay = {{ dates_display | tojson | safe }};
+
+    // Helper function to convert ISO date to display format (DD/MM/YYYY)
+    function isoToDisplay(isoDate) {
+      const [year, month, day] = isoDate.split('-');
+      return `${day}/${month}/${year}`;
+    }
+
+    // Helper function to convert ISO date to raw format (YYYYMMDD)
+    function isoToRaw(isoDate) {
+      return isoDate.replace(/-/g, '');
+    }
 
     let mainPicker = null;
 
     if (datesIso.length > 0) {
-      // Get first and last display dates
-      const firstDisplay = datesDisplay[0];
-      const lastDisplay = datesDisplay[datesDisplay.length - 1];
+      // Get first and last dates
+      const firstIso = datesIso[0];
+      const lastIso = datesIso[datesIso.length - 1];
+      const firstDisplay = isoToDisplay(firstIso);
 
       // Main date picker for data loading
       mainPicker = flatpickr("#date-picker", {
@@ -279,9 +305,13 @@
         defaultDate: firstDisplay,
         disableMobile: true,
         onChange: function (selectedDates, dateStr) {
-          const idx = datesDisplay.indexOf(dateStr);
+          // Convert display format back to ISO to find index
+          const [day, month, year] = dateStr.split('/');
+          const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+          const idx = datesIso.indexOf(isoDate);
+
           if (idx >= 0) {
-            const newDate = datesRaw[idx];
+            const newDate = isoToRaw(datesIso[idx]);
             document.getElementById("date-raw").value = newDate;
 
             // Trigger update if date changed
@@ -313,33 +343,39 @@
         dateFormat: "d/m/Y",
         allowInput: true,
         disableMobile: true,
-        defaultDate: lastDisplay,
+        defaultDate: isoToDisplay(lastIso),
       });
 
       // Set initial raw date
-      document.getElementById("date-raw").value = datesRaw[0];
+      document.getElementById("date-raw").value = isoToRaw(firstIso);
 
       // Previous date button
       document.getElementById("prev-date").addEventListener("click", () => {
         const currentRaw = document.getElementById("date-raw").value;
-        const currentIdx = datesRaw.indexOf(currentRaw);
+        // Find current ISO date
+        const currentIso = datesIso.find(iso => isoToRaw(iso) === currentRaw);
+        const currentIdx = datesIso.indexOf(currentIso);
 
         if (currentIdx > 0) {
           const newIdx = currentIdx - 1;
-          document.getElementById("date-raw").value = datesRaw[newIdx];
-          mainPicker.setDate(datesDisplay[newIdx], true); // This triggers onChange
+          const newIso = datesIso[newIdx];
+          document.getElementById("date-raw").value = isoToRaw(newIso);
+          mainPicker.setDate(isoToDisplay(newIso), true); // This triggers onChange
         }
       });
 
       // Next date button
       document.getElementById("next-date").addEventListener("click", () => {
         const currentRaw = document.getElementById("date-raw").value;
-        const currentIdx = datesRaw.indexOf(currentRaw);
+        // Find current ISO date
+        const currentIso = datesIso.find(iso => isoToRaw(iso) === currentRaw);
+        const currentIdx = datesIso.indexOf(currentIso);
 
-        if (currentIdx < datesRaw.length - 1) {
+        if (currentIdx < datesIso.length - 1) {
           const newIdx = currentIdx + 1;
-          document.getElementById("date-raw").value = datesRaw[newIdx];
-          mainPicker.setDate(datesDisplay[newIdx], true); // This triggers onChange
+          const newIso = datesIso[newIdx];
+          document.getElementById("date-raw").value = isoToRaw(newIso);
+          mainPicker.setDate(isoToDisplay(newIso), true); // This triggers onChange
         }
       });
 
