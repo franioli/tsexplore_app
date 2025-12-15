@@ -1,19 +1,16 @@
 """Centralized data cache manager.
 
-This cache stores one DIC result per record (typically one file read by the loader).
-Multiple records can share the same slave date (e.g., X-1, X-3, X-5 intervals).
+This cache stores one DIC result per record (typically one file read by the loader). Multiple records can share the same reference date, but different dt (e.g., X-1, X-3, X-5 intervals).
 
 Design:
 - Primary storage is keyed by record_id:
     - dic_records[record_id] -> payload dict (arrays + precomputed velocity)
-    - dic_meta[record_id] -> DicMeta (master/slave/dt metadata)
-- Only one index is kept:
-    - records_by_slave[slave_yyyymmdd] -> list[record_id]
-
-Rationale:
-- Most queries start from a slave date. Indexing by slave date is efficient and simple.
-- Additional indexes (e.g., by (master,slave,dt)) are derived dynamically from the
-  per-slave list and metadata to avoid redundancy.
+    - dic_meta[record_id] -> DicMeta (metadata: initial/final dates, dt, etc)
+- Indexes:
+    - records_by_reference[YYYYMMDD] -> list of record_ids (final image date)
+- Derived structures (built lazily):
+    - kdtree: spatial index for fast nearest-node queries
+    - images: cached background images (data URLs + raw bytes)
 """
 
 from __future__ import annotations
@@ -37,7 +34,7 @@ class DicMeta:
         - reference_date: alias for final_date (the day the result is referenced to).
 
     Attributes:
-        record_id: Unique identifier for this cached record.
+        record_id: Unique identifier for this cached record. Assigned by DataCache.
         initial_date: Initial date (initial image) of the DIC analysis.
         final_date: Final date (final image) of the DIC analysis (aka reference date).
         dt_hours: Time span between initial and final in hours.
@@ -75,7 +72,6 @@ class DataCache:
 
         # derived structures (built lazily)
         self.kdtree: tuple[cKDTree, np.ndarray] | None = None  # (tree, coords)
-        self.grid: dict[str, Any] | None = None
         self.images: dict[str, dict[str, Any]] = {}
 
         # loading/progress metadata for DB range loads
@@ -85,6 +81,9 @@ class DataCache:
         self.load_start_date: str | None = None
         self.load_end_date: str | None = None
         self.load_error: str | None = None
+
+        # Last record id used (for assigning new record ids)
+        self._last_record_id: int = 0
 
     def __repr__(self) -> str:
         """Return a short representation useful for logs/debug."""
@@ -102,10 +101,6 @@ class DataCache:
     def has_kdtree(self) -> bool:
         """Return True if the KDTree is already built and cached."""
         return self.kdtree is not None
-
-    def has_grid(self) -> bool:
-        """Return True if the grid index is already built and cached."""
-        return self.grid is not None
 
     def get_available_dates(self) -> list[str]:
         """Return loaded reference dates as YYYYMMDD strings.
@@ -126,18 +121,33 @@ class DataCache:
         metas = list(self._iter_metas_for_reference(reference_yyyymmdd))
         return sorted({m.dt_days for m in metas})
 
-    def store_dic_record(self, *, meta: DicMeta, payload: dict[str, Any]) -> None:
+    def store_dic_record(
+        self, *, meta: dict[str, Any], payload: dict[str, Any]
+    ) -> None:
         """Store one DIC record and index it by reference date (final date).
 
         Args:
             meta: Record metadata (initial/final/reference + dt).
             payload: Record payload (arrays + derived fields).
         """
-        self.dic_meta[meta.record_id] = meta
-        self.dic_records[meta.record_id] = payload
+        # Build DicMeta object
+        id = self._last_record_id + 1
+        dic_meta = DicMeta(
+            record_id=id,
+            initial_date=meta["initial_date"],
+            final_date=meta["final_date"],
+            dt_hours=meta["dt_hours"],
+            dt_days=meta["dt_days"],
+        )
 
-        reference_key = meta.reference_date.strftime("%Y%m%d")
-        self.records_by_reference.setdefault(reference_key, []).append(meta.record_id)
+        # Store record
+        self.dic_meta[id] = dic_meta
+        self.dic_records[id] = payload
+        reference_key = dic_meta.reference_date.strftime("%Y%m%d")
+        self.records_by_reference.setdefault(reference_key, []).append(id)
+
+        # Update last record id
+        self._last_record_id = id
 
     def get_dic_record(self, record_id: int) -> tuple[DicMeta, dict[str, Any]] | None:
         """Get a cached record by record_id.
@@ -238,7 +248,6 @@ class DataCache:
         self.records_by_reference.clear()
 
         self.kdtree = None
-        self.grid = None
         self.images.clear()
 
         self.load_in_progress = False
@@ -294,24 +303,6 @@ class DataCache:
             raw_bytes: Original encoded bytes (e.g., PNG/JPEG).
         """
         self.images[path] = {"data_url": data_url, "size": size, "bytes": raw_bytes}
-
-    # ---------------------------------------------------------------------
-    # Internals
-    # ---------------------------------------------------------------------
-    def _iter_metas_for_slave(self, slave_yyyymmdd: str) -> Iterable[DicMeta]:
-        """Yield DicMeta entries for a given slave date.
-
-        Args:
-            slave_yyyymmdd: Slave date in YYYYMMDD format.
-
-        Yields:
-            DicMeta items for records associated with the slave date.
-        """
-        ids = self.records_by_slave.get(slave_yyyymmdd, [])
-        for rid in ids:
-            m = self.dic_meta.get(rid)
-            if m is not None:
-                yield m
 
 
 class AppState:

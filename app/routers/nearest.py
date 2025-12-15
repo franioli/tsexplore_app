@@ -13,23 +13,21 @@ router = APIRouter()
 
 @router.get("/", response_model=NearestNodeResponse)
 async def api_nearest(
-    date: str = Query(...),
+    reference_date: str = Query(...),
     x: float = Query(...),
     y: float = Query(...),
     radius: float = Query(10.0, ge=0, le=1000),
-    method: str = Query("hybrid"),
 ):
     """Find nearest node."""
     logger.info(
-        f"API /nearest - date={date}, x={x}, y={y}, radius={radius}, method={method}"
+        f"API /nearest - reference_date={reference_date}, x={x}, y={y}, radius={radius}"
     )
     try:
         node = find_nearest_node(
             x=x,
             y=y,
-            date=date,
+            reference_date=reference_date,
             radius=radius,
-            method=method,  # type: ignore
         )
 
         if node is None:
@@ -37,7 +35,9 @@ async def api_nearest(
             raise HTTPException(status_code=404, detail="No node within radius")
 
         logger.info(f"Found nearest node: ({node['x']:.2f}, {node['y']:.2f})")
-        return NearestNodeResponse(x=float(node["x"]), y=float(node["y"]))
+        return NearestNodeResponse(
+            node_id=int(node["node_id"]), x=float(node["x"]), y=float(node["y"])
+        )
 
     except HTTPException:
         raise

@@ -127,7 +127,6 @@ class NearestNodeRequest(BaseModel):
     x: float = Field(..., description="X coordinate")
     y: float = Field(..., description="Y coordinate")
     radius: float = Field(10.0, ge=0, le=1000, description="Search radius in pixels")
-    method: Literal["hybrid", "kdtree", "grid"] = "hybrid"
 
     @field_validator("date")
     @classmethod
@@ -142,6 +141,7 @@ class NearestNodeRequest(BaseModel):
 class NearestNodeResponse(BaseModel):
     """Response model for nearest node endpoint."""
 
+    node_id: int
     x: float
     y: float
 

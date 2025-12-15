@@ -20,13 +20,13 @@ date_format: "%Y%m%d"
 # Background image path (optional)
 # background_image: ./data/PPCX_2_2021_08_03_13_01_02.jpg 
 # Otherwise set to null to disable background image
-background_image: "./data/PPCX_2_2021_08_03_13_01_02.jpg"
+background_image: null #"./data/PPCX_2_2021_08_03_13_01_02.jpg"
 
 # Results output directory
 results_dir: ./results
 
 # Data settings
-dt_days_preferred: null  # Set to an integer (e.g., 3) to filter by preferred time delta in days
+dt_days_preferred: 1  # Set to an integer (e.g., 3) to filter by preferred time delta in days
 invert_y: true
 search_radius: 5.0
 

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import get_logger, get_settings
 from ..services.data_provider import DataProvider, get_data_provider
-from ..services.inversion import invert_node2, load_dic_data
+from ..services.inversion import invert_node, load_dic_data
 from ..services.plots import make_timeseries_figure
 from ..services.spatial import build_kdtree
 
@@ -108,8 +108,6 @@ async def timeseries(
         metadata["dt (days)"] = int(dt_days)
     elif prefer_dt_days is not None:
         metadata["prefer dt (days)"] = int(prefer_dt_days)
-    if master_date is not None:
-        metadata["master"] = master_date
 
     if "V" in comp_list:
         metadata["Mean |v|"] = float(np.mean(V))
@@ -155,14 +153,14 @@ async def timeseries(
             ens_mad = dic["weight"][:, idx] if "weight" in dic else None
             timestamp = dic["timestamp"]
 
-            inv = invert_node2(
+            inv = invert_node(
                 ew_series=ew_series,
                 ns_series=ns_series,
                 timestamp=timestamp,
                 node_idx=idx,
                 node_x=coords[idx, 0],
                 node_y=coords[idx, 1],
-                weight_method="variable" if ens_mad is not None else "residuals",
+                weight_method="variable" if ens_mad is not None else "Charrier",
                 weight_variable=ens_mad,
                 regularization_method="laplacian",
                 lambda_scaling=1.0,

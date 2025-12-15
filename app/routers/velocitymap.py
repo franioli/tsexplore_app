@@ -9,8 +9,8 @@ from PIL import Image
 
 from ..cache import cache
 from ..config import get_logger, get_settings
-from ..services.plots import make_velocity_map_figure
 from ..services.data_provider import get_data_provider
+from ..services.plots import make_velocity_map_figure
 
 logger = get_logger()
 settings = get_settings()
@@ -83,10 +83,19 @@ def _get_cached_image(
 
 @router.get("/")
 async def velocity_map(
-    date: str = Query(..., description="Slave date in YYYYMMDD format"),
-    dt_days: int | None = Query(None, ge=0, description="Select record by dt_days"),
-    master_date: str | None = Query(None, description="Master date in YYYYMMDD format"),
-    prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days"),
+    reference_date: str | None = Query(
+        None,
+        description=(
+            "Reference date in YYYYMMDD format (FINAL image date used for the DIC computation)."
+        ),
+    ),
+    dt_days: int | None = Query(
+        None, ge=0, description="Select record by dt_days (exact)."
+    ),
+    prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days."),
+    prefer_dt_tolerance: int | None = Query(
+        None, ge=0, description="Tolerance (days) for closest dt_days selection."
+    ),
     use_velocity: bool = Query(True),
     cmin: float | None = Query(None, ge=0),
     cmax: float | None = Query(None, ge=0),
@@ -101,19 +110,26 @@ async def velocity_map(
     selected_y: float | None = Query(None),
 ):
     """Create map for a given date."""
-    logger.info(f"map: date={date} use_velocity={use_velocity}")
+    logger.info(f"map: date={reference_date} use_velocity={use_velocity}")
 
     # Get data provider
     provider = get_data_provider()
 
     # Fetch DIC data
     raw = provider.get_dic_data(
-        date, dt_days=dt_days, master_date=master_date, prefer_dt_days=prefer_dt_days
+        reference_date,
+        dt_days=dt_days,
+        prefer_dt_days=prefer_dt_days,
+        prefer_dt_tolerance=prefer_dt_tolerance,
     )
     if not raw:
         raise HTTPException(
             status_code=404,
-            detail=f"No data for slave date {date} (dt_days={dt_days}, master={master_date})",
+            detail=(
+                "No data for reference date "
+                f"{reference_date} (dt_days={dt_days}, prefer_dt_days={prefer_dt_days}, "
+                f"prefer_dt_tolerance={prefer_dt_tolerance})"
+            ),
         )
 
     # Prepare data for plotting
@@ -122,9 +138,9 @@ async def velocity_map(
     mag = raw["V"] if use_velocity else raw["disp_mag"]
     units = "velocity (px/day)" if use_velocity else "displacement (px)"
     try:
-        date_display = datetime.strptime(date, "%Y%m%d").strftime("%d/%m/%Y")
+        date_display = datetime.strptime(reference_date, "%Y%m%d").strftime("%d/%m/%Y")
     except ValueError:
-        date_display = date
+        date_display = reference_date
     metadata = {
         "Date": date_display,
         "dt (days)": dt_days or "N/A",
@@ -159,7 +175,7 @@ async def velocity_map(
     # Load/cached background here
     bg_src, _bg_size = _get_cached_image(settings.background_image, max_dimension=2048)
 
-    #
+    # make figure
     fig = make_velocity_map_figure(
         x=x,
         y=y,

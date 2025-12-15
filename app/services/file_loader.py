@@ -19,7 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..cache import DicMeta, cache
+from ..cache import cache
 from ..config import get_settings
 from .data_provider import DataProvider
 
@@ -325,9 +325,7 @@ def _load_all_from_disk_into_cache(
     data_path = Path(data_dir)
     files = sorted(data_path.glob(file_pattern))
 
-    record_id = 0
     loaded = 0
-
     for f in files:
         try:
             final_date, initial_date = _parse_filename(
@@ -361,15 +359,13 @@ def _load_all_from_disk_into_cache(
                 v_vel = dy
                 V_vel = disp_mag
 
-            record_id += 1
-            meta = DicMeta(
-                record_id=record_id,
-                initial_date=initial_date,
-                final_date=final_date,
-                dt_hours=dt_hours,
-                dt_days=dt_days,
-            )
-
+            meta = {
+                "initial_date": initial_date,
+                "final_date": final_date,
+                "reference_date": final_date,
+                "dt_hours": dt_hours,
+                "dt_days": dt_days,
+            }
             payload = {
                 "x": dic_data["x"],
                 "y": dic_data["y"],

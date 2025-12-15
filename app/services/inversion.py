@@ -352,7 +352,7 @@ def weight_definition(
     return W0
 
 
-def invert_node(
+def invert_node_old(
     ew_series: np.ndarray,
     ns_series: np.ndarray,
     weight_series: np.ndarray,
@@ -378,6 +378,9 @@ def invert_node(
     Returns:
         Dictionary with inversion results or None if data is invalid
     """
+    logger.warning(
+        "invert_node_old is deprecated. Please use invert_node for improved performance."
+    )
 
     # -estraggo spostamento
     ew = ew_series.squeeze()
@@ -495,7 +498,7 @@ def invert_node(
     return output
 
 
-def invert_node2(
+def invert_node(
     ew_series: np.ndarray,
     ns_series: np.ndarray,
     timestamp: np.ndarray,
