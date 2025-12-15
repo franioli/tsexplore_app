@@ -1,0 +1,48 @@
+# Load data from database
+use_database: false
+
+# Data directory containing day_dic files
+data_dir: ./data/day_dic
+
+# File glob pattern
+file_pattern: "*.txt"
+
+# Regex pattern to extract dates from filenames (must have 2 capture groups)
+# Examples:
+# - day_dic_20230101-20230104.txt -> day_dic_(\d{8})-(\d{8})
+# - dic_20230101_20230104.txt -> dic_(\d{8})_(\d{8})
+# - 20230101-20230104.txt -> (\d{8})-(\d{8})
+filename_pattern: 'day_dic_(\d{8})-(\d{8})'
+
+# Date format in filenames
+date_format: "%Y%m%d"
+
+# Background image path (optional)
+# background_image: ./data/PPCX_2_2021_08_03_13_01_02.jpg
+background_image: ""
+
+# Results output directory
+results_dir: ./results
+
+
+# Data settings
+invert_y: true
+search_radius: 5.0
+
+# Database connection (if use_database is true)
+# db_host: "150.145.51.193"
+# db_port: 5434
+# db_name: "planpincieux"
+# db_user: "postgres"
+# db_password: ""  # Better to keep in .env or as env var
+
+# API connection (if use_api is true)
+# use_api: false
+# api_host: "150.145.51.193"
+# api_port: 8080
+
+
+# Overwrite guinicorn server settings
+# host: 0.0.0.0
+# port: 8000
+# debug: true

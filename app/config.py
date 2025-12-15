@@ -1,44 +1,36 @@
 import logging
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import (
+    PydanticBaseSettingsSource,
+    YamlConfigSettingsSource,
+)
+
+CFG_PATH = Path(os.getenv("CONFIG_FILE", "config.yaml"))
 
 
 class Settings(BaseSettings):
     """Application settings with validation."""
 
-    # Database connection (optional - falls back to file-based if not set)
-    # use_database: bool = False
-    # db_host: str = "db"
-    # db_port: int = 5432
-    # db_name: str = "ppcx"
-    # db_user: str = "postgres"
-    # db_password: str = ""
-
+    # Database connection
     use_database: bool = False
     db_host: str = "150.145.51.193"
     db_port: int = 5434
     db_name: str = "planpincieux"
     db_user: str = "postgres"
-    db_password: str = "postgresppcx"
+    db_password: str = ""
 
+    # API connection
     use_api: bool = False
     api_host: str = "150.145.51.193"
     api_port: int = 8080
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",  # Ignore extra fields from .env
-    )
-
-    serve_ui: bool = True  # if False FastAPI will not register the HTML UI routes
-
     # Data paths
     data_dir: Path = Path("./data/day_dic")
-    file_pattern: str = "*.txt"  # glob pattern to match data files # TODO: avoid ambiguity with filename_pattern
-    filename_pattern: str = r"day_dic_(\d{8})-(\d{8})"  # regex to extract date range
+    file_pattern: str = "*.txt"
+    filename_pattern: str = r"day_dic_(\d{8})-(\d{8})"
     background_image: str = ""
     background_image_opacity: float = 1.0
 
@@ -55,7 +47,7 @@ class Settings(BaseSettings):
     default_marker_opacity: float = 0.7
     default_downsample_points: int = 5000
 
-    # Results and search
+    # Results directory
     results_dir: Path = Path("./results")
 
     # Logging
@@ -66,8 +58,38 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = False
 
-    # Admin token to protect reload endpoint (optional)
+    # Admin token
     admin_reload_token: str | None = None
+
+    # UI configuration
+    serve_ui: bool = True
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority: defaults -> .env -> YAML -> env vars (env vars highest)
+        # In pydantic-settings v2, earlier sources have higher priority.
+        yaml_source = YamlConfigSettingsSource(settings_cls, yaml_file=str(CFG_PATH))
+        return (
+            init_settings,
+            env_settings,  # highest
+            yaml_source,  # overrides .env
+            dotenv_settings,
+            file_secret_settings,  # secrets dir, if used
+        )
 
 
 # module-level cached instance (lazy)
@@ -75,7 +97,6 @@ _settings: Settings | None = None
 
 
 def get_settings() -> Settings:
-    """Return the live settings instance. Lazily instantiate on first call."""
     global _settings
     if _settings is None:
         _settings = Settings()
@@ -83,31 +104,24 @@ def get_settings() -> Settings:
 
 
 def reload_settings() -> Settings:
-    """Recreate the Settings instance (reads env file / env vars again)."""
     global _settings
     _settings = Settings()
     return _settings
 
 
-# logger setup
-
-
 def setup_logger() -> logging.Logger:
-    """Setup the module-level logger."""
     logging.basicConfig(
         level=get_settings().log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        force=True,  # ensure reconfiguration in case of multiple calls
+        force=True,
     )
     return logging.getLogger(__name__)
 
 
 def get_logger() -> logging.Logger:
-    """Return the module-level logger."""
     global _logger
     if _logger is None:
         _logger = setup_logger()
-
     return _logger
 
 
