@@ -147,7 +147,7 @@ def make_velocity_map_figure(
 
         if isinstance(marker_opacity, str) and marker_opacity.lower() == "auto":
             # Normalize magnitude to [0,1] for per-point opacity
-            vmax = float(cmax) if cmax is not None else np.max(mag_plot)
+            vmax = float(cmax) if cmax is not None else np.quantile(mag_plot, 0.95)
             alpha = np.clip(mag_plot.astype(float) / vmax, 0.0, 1.0)
 
             # Mask-out very small values completely (simple & effective)

@@ -26,7 +26,7 @@ background_image: null #"./data/PPCX_2_2021_08_03_13_01_02.jpg"
 results_dir: ./results
 
 # Data settings
-dt_days_preferred: 1  # Set to an integer (e.g., 3) to filter by preferred time delta in days
+dt_days_preferred: null  # Set to an integer (e.g., 3) to filter by preferred time delta in days or null to keep all
 invert_y: true
 search_radius: 5.0
 
