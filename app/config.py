@@ -28,17 +28,28 @@ class Settings(BaseSettings):
     api_port: int = 8080
 
     # Data paths
-    data_dir: Path = Path("./data/day_dic") 
-    file_pattern: str = "*.txt"
-    filename_pattern: str = r"day_dic_(\d{8})-(\d{8})"
+    data_dir: Path = Path("./data/day_dic")
+    file_search_pattern: str = "*.txt"
+
+    # Filename template to extract intiial and final dates from filenames.
+    # Template matches the file *stem* (filename without extension).
+    # Use placeholders: {final:<strftime>} and {initial:<strftime>}.
+    # Examples:
+    # - day_dic_20230104-20230101.txt -> "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
+    filename_date_template: str | None = None
+
+    # Backward compatible settings (deprecated): regex with 2 capture groups + a shared date_format
+    # filename_pattern: str = r"day_dic_(\d{8})-(\d{8})"
+    # date_format: str = "%Y%m%d"
+
+    # Background image settings
     background_image: str | None = None  # Path to background image or None
     background_image_opacity: float = 1.0
 
     # Processing parameters
     dt_days_preferred: int | None = None
     invert_y: bool = False
-    date_format: str = "%Y%m%d"
-    search_radius: float = 5.0
+    node_search_radius: float = 5.0
 
     # API defaults
     default_colorscale: str = "Reds"

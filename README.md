@@ -40,7 +40,17 @@ Copy `.env.example` to `.env` and configure:
 cp .env.example .env
 ```
 
-Edit `.env` with your data paths and settings.
+Edit `.env` / `config.yaml` with your data paths and settings.
+
+### Filename date extraction
+
+For file-based loading, the recommended option is a single template that defines both the
+location of the dates in the filename and their format:
+
+- `filename_date_template: "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"`
+
+The template is matched against the file stem (filename without extension). Use the
+placeholders `{final:<strftime>}` and `{initial:<strftime>}`.
 
 ## Usage
 

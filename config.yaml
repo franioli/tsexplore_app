@@ -2,20 +2,20 @@
 use_database: false
 
 # Data directory containing day_dic files
-data_dir: ./data/day_dic
+data_dir: /mnt/irpinas/planpincieux/ppcx_dic/output/2020/correlation/h5/
 
 # File glob pattern
-file_pattern: "*.txt"
+file_search_pattern: "*.h5"
 
-# Regex pattern to extract dates from filenames (must have 2 capture groups)
+# Filename template to extract intiial and final dates from filenames.
+# Template matches the file *stem* (filename without extension).
+# Use placeholders: {final:<strftime>} and {initial:<strftime>}.
 # Examples:
-# - day_dic_20230104-20230101.txt -> day_dic_(\d{8})-(\d{8})
-# - dic_20230104-20230101.txt -> dic_(\d{8})_(\d{8})
-# - 20230104-20230101.txt -> (\d{8})-(\d{8})
-filename_pattern: 'day_dic_(\d{8})-(\d{8})'
-
-# Date format in filenames
-date_format: "%Y%m%d"
+# - day_dic_20230104-20230101.txt -> "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
+# - dic_20230104_20230101.txt     -> "dic_{final:%Y%m%d}_{initial:%Y%m%d}"
+# - 20230104-20230101_dic.txt     -> "{final:%Y%m%d}-{initial:%Y%m%d}_dic"
+# filename_date_template: "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
+filename_date_template: "day_dic_{final:%Y-%m-%d}_{initial:%Y-%m-%d}_*"
 
 # Background image path (optional)
 # background_image: ./data/PPCX_2_2021_08_03_13_01_02.jpg 
@@ -23,12 +23,14 @@ date_format: "%Y%m%d"
 background_image: null #"./data/PPCX_2_2021_08_03_13_01_02.jpg"
 
 # Results output directory
-results_dir: ./results
+# results_dir: ./results
 
 # Data settings
 dt_days_preferred: null  # Set to an integer (e.g., 3) to filter by preferred time delta in days or null to keep all
-invert_y: true
-search_radius: 5.0
+invert_y: false
+
+# log legel
+log_level: "DEBUG"
 
 # Database connection (if use_database is true)
 # db_host: "150.145.51.193"
@@ -41,7 +43,6 @@ search_radius: 5.0
 # use_api: false
 # api_host: "150.145.51.193"
 # api_port: 8080
-
 
 # Overwrite guinicorn server settings
 # host: 0.0.0.0
