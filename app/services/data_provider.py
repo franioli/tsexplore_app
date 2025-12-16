@@ -13,8 +13,13 @@ class DataProvider(Protocol):
     """Interface for DIC data providers (file-based or database)."""
 
     def get_available_dates(self) -> list[str]:
-        """Return list of available dates in YYYYMMDD format."""
-        ...
+        """Return all *available* reference dates (YYYY-MM-DD) WITHOUT loading full data.
+
+        This must be cheap:
+        - file backend: scan filenames and parse dates
+        - db backend: query distinct dates / metadata table
+        """
+        raise NotImplementedError
 
     def get_dic_data(
         self,

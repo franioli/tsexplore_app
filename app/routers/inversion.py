@@ -12,7 +12,7 @@ settings = get_settings()
 router = APIRouter()
 
 
-@router.post("/run")
+@router.post("/inversion/run", summary="Run time-series inversion", tags=["inversion"])
 async def run_inversion(params: dict[str, Any] = Body(...)):
     """
     Run time-series inversion for the corpus or for a node.

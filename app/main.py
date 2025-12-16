@@ -1,7 +1,6 @@
 """FastAPI application for velocity field visualization and time series analysis."""
 
 from contextlib import asynccontextmanager
-from datetime import datetime
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -11,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from .cache import AppState, cache
 from .config import get_logger, get_settings
 from .routers import router as api_router
-from .services import build_kdtree, get_data_provider
+from .services import get_data_provider
 
 logger = get_logger()
 settings = get_settings()
@@ -24,47 +23,17 @@ provider = None  # type: ignore
 templates = Jinja2Templates(directory="app/templates")
 
 
-def get_loaded_dates() -> list[str]:
-    """Return dates from cache if present, otherwise from provider.
-
-    Returns:
-        A sorted list of slave dates as ``YYYYMMDD`` strings.
-    """
-    # Prefer cache (file backend preloads at startup; DB range loader may also fill cache)
-    if cache.is_loaded():
-        return cache.get_available_dates()
-
-    # Fallback to provider's available dates (reads DB or lists files)
-    provider = get_data_provider()
-    try:
-        return provider.get_available_dates()
-    except Exception:
-        return []  # will display "No data" in UI; debug logs should explain failure
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: preload data on startup."""
+    """Application lifespan: do NOT preload data at startup (lazy loading)."""
     global provider
-    logger.info("Starting application - initializing provider")
+    logger.info("Starting application - initializing provider (lazy loading enabled)")
     try:
-        # Initialize data provider (file or DB)
         provider = get_data_provider()
         logger.info(f"Using data provider: {provider.__class__.__name__}")
 
-        # If not using DB backend preload all data and build spatial index
-        if not settings.use_database:
-            logger.info("Non-DB backend detected - preloading all data")
-            loaded_count = provider.load_all()
-            tree, coords = build_kdtree(provider)
-            logger.info(f"Preloaded {loaded_count} DIC records and built spatial index")
-
-        else:
-            # Load only one sample day to display correctly the ui,
-
-            logger.info(
-                "DB backend detected - not preloading data at startup (use loader to preload a range)"
-            )
+        # Default behavior: do not load any data until user presses "Load"
+        logger.debug("Skipping preload at startup; waiting for user-triggered load")
 
         app_state.mark_ready()
         logger.info("Application ready")
@@ -99,26 +68,24 @@ if settings.serve_ui:
 
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request):
-        """Serve the main HTML page (only when serve_ui is True)."""
         if not app_state.is_ready():
             return HTMLResponse(
                 "<h1>Service starting up, please wait...</h1>", status_code=503
             )
 
-        dates_raw = get_loaded_dates()
-        if not dates_raw and settings.use_database:
-            # DB backend but no dates known yet - UI should show load controls
-            dates_iso = []
-        else:
-            dates_iso = [
-                datetime.strptime(d, "%Y%m%d").strftime("%Y-%m-%d") for d in dates_raw
-            ]
+        # Always show *available* dates for the LOAD pickers (lazy, no data load)
+        available_dates = provider.get_available_dates() if provider is not None else []
+
+        # Show *loaded* dates for the main navigation/plots (depends on cache)
+        loaded_dates = cache.get_available_dates() if cache.is_loaded() else []
 
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
-                "dates_iso": dates_iso,
+                "available_dates_iso": available_dates,
+                "loaded_dates_iso": loaded_dates,
+                "use_database": settings.use_database,
                 "background_image": settings.background_image,
             },
         )

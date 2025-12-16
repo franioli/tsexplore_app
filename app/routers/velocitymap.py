@@ -20,7 +20,7 @@ router = APIRouter()
 
 @router.get("/dates")
 async def dates_list():
-    """Return loaded dates as YYYYMMDD list."""
+    """Return loaded dates as YYYY-MM-DD list."""
     provider = get_data_provider()
     dates = provider.get_available_dates()
     return JSONResponse({"dates": dates})
@@ -81,20 +81,17 @@ def _get_cached_image(
         return (None, None)
 
 
-@router.get("/")
+@router.get("/velocitymap", summary="Get velocity map data", tags=["velocitymap"])
 async def velocity_map(
-    reference_date: str | None = Query(
-        None,
-        description=(
-            "Reference date in YYYYMMDD format (FINAL image date used for the DIC computation)."
-        ),
+    reference_date: str = Query(
+        ..., description=("Reference date in YYYY-MM-DD format")
     ),
     dt_days: int | None = Query(
         None, ge=0, description="Select record by dt_days (exact)."
     ),
     prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days."),
     prefer_dt_tolerance: int | None = Query(
-        None, ge=0, description="Tolerance (days) for closest dt_days selection."
+        None, ge=0, description="Tolerance (days) for closest dt selection."
     ),
     use_velocity: bool = Query(True),
     cmin: float | None = Query(None, ge=0),
@@ -138,7 +135,9 @@ async def velocity_map(
     mag = raw["V"] if use_velocity else raw["disp_mag"]
     units = "velocity (px/day)" if use_velocity else "displacement (px)"
     try:
-        date_display = datetime.strptime(reference_date, "%Y%m%d").strftime("%d/%m/%Y")
+        date_display = datetime.strptime(reference_date, "%Y-%m-%d").strftime(
+            "%d/%m/%Y"
+        )
     except ValueError:
         date_display = reference_date
     metadata = {

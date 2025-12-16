@@ -15,6 +15,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -33,20 +34,53 @@ class FileDataProvider(DataProvider):
     def __init__(self):
         """Initialize the file-backed provider."""
         self.settings = get_settings()
+
+        # caches for get_available_dates()
+        self._available_dates_cache: list[str] | None = None
+        self._available_dates_sig: tuple[str, str, str | None] | None = None
+
+        # Cache for data
+        self._loaded = False
         self._data_cache = None
 
     def get_available_dates(self) -> list[str]:
-        """Return available (loaded) slave dates.
+        """Return all available reference dates (YYYY-MM-DD) without loading DIC arrays.
 
-        Returns:
-            A sorted list of slave dates as strings.
-
-        Raises:
-            ValueError: If data has not been loaded yet.
+        For file backend this means scanning filenames and parsing {final}/{initial}
+        from the stem using filename_date_template.
         """
-        if not cache.is_loaded():
-            self.load_all()
-        return cache.get_available_dates()
+        s = self.settings
+        sig = (
+            str(s.data_dir),
+            str(s.file_search_pattern),
+            getattr(s, "filename_date_template", None),
+        )
+
+        if self._available_dates_cache is not None and self._available_dates_sig == sig:
+            return self._available_dates_cache
+
+        data_path = Path(s.data_dir)
+        files = data_path.glob(s.file_search_pattern)
+
+        dates: set[str] = set()
+        for f in files:
+            try:
+                final_date, _initial_date = _parse_filename(
+                    f,
+                    filename_date_template=getattr(s, "filename_date_template", None),
+                    # legacy args kept for compatibility
+                    filename_pattern=getattr(s, "filename_pattern", None),
+                    date_format=getattr(s, "date_format", None),
+                )
+                dates.add(final_date.strftime("%Y-%m-%d"))
+            except Exception:
+                # keep scanning; filenames may include non-DIC outputs
+                continue
+
+        out = sorted(dates)
+        self._available_dates_cache = out
+        self._available_dates_sig = sig
+        return out
 
     def get_dic_data(
         self,
@@ -60,9 +94,9 @@ class FileDataProvider(DataProvider):
         """Get the DIC payload for a given reference day (final image date).
 
         Args:
-            reference_date: Reference date in YYYYMMDD (final image date).
+            reference_date: Reference date in YYYY-MM-DD (final image date).
             dt_days: If provided, select the record with this time interval (days).
-            initial_date: If provided, select by initial date (YYYYMMDD). Can be combined
+            initial_date: If provided, select by initial date (YYYY-MM-DD). Can be combined
                 with dt_days for an exact match.
             prefer_dt_days: If provided, pick the record whose dt_days is closest.
             prefer_dt_tolerance: Optional tolerance (days) for closest match.
@@ -71,7 +105,18 @@ class FileDataProvider(DataProvider):
             The payload dict for the selected record, or None if no matching record exists.
         """
         if not cache.is_loaded():
-            self.load_all()
+            raise ValueError(
+                "No data loaded yet. Press 'Load' before requesting DIC data."
+            )
+        # Convert reference_date to YYYYMMDD for cache lookup
+        if "-" in reference_date:
+            reference_date = datetime.strptime(reference_date, "%Y-%m-%d").strftime(
+                "%Y%m%d"
+            )
+        if initial_date and "-" in initial_date:
+            initial_date = datetime.strptime(initial_date, "%Y-%m-%d").strftime(
+                "%Y%m%d"
+            )
 
         rid = cache.find_record_id(
             reference_yyyymmdd=reference_date,
@@ -100,12 +145,12 @@ class FileDataProvider(DataProvider):
             return cache.num_records
 
         s = self.settings
-        n = _load_all_from_disk_into_cache(
+        n = _load_data_to_cache(
             data_dir=s.data_dir,
             file_search_pattern=s.file_search_pattern,
             filename_date_template=getattr(s, "filename_date_template", None),
-            # filename_pattern=s.filename_pattern,
-            # date_format=s.date_format,
+            filename_pattern=getattr(s, "filename_pattern", None),
+            date_format=getattr(s, "date_format", None),
             invert_y=s.invert_y,
             dt_days_preferred=getattr(s, "dt_days_preferred", None),
         )
@@ -118,17 +163,27 @@ class FileDataProvider(DataProvider):
         end_date: str,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> int:
-        """Load only the dates in the requested range (files).
+        """Load only files whose FINAL date is in [start_date, end_date] (inclusive).
 
-        Args:
-            start_date: Start date (inclusive).
-            end_date: End date (inclusive).
-            progress_callback: Optional callback receiving ``(done, total)``.
-
-        Returns:
-            Number of loaded records.
+        Dates are expected as 'YYYY-MM-DD' (from UI).
         """
-        raise NotImplementedError("FileDataProvider does not support load_range()")
+        s = self.settings
+
+        dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
+        dt_end = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
+
+        n = _load_data_to_cache(
+            data_dir=s.data_dir,
+            file_search_pattern=s.file_search_pattern,
+            filename_date_template=getattr(s, "filename_date_template", None),
+            dt_days_preferred=getattr(s, "dt_days_preferred", None),
+            reference_date_start=dt_start,
+            reference_date_end=dt_end,
+            invert_y=s.invert_y,
+            progress_callback=progress_callback,
+        )
+        self._loaded = True
+        return n
 
     def get_coordinates(self) -> np.ndarray:
         """Get coordinate array from the first loaded record.
@@ -153,6 +208,56 @@ class FileDataProvider(DataProvider):
 
         _meta, payload = rec
         return np.column_stack([payload["x"], payload["y"]])
+
+
+@lru_cache(maxsize=64)
+def _compile_filename_date_template(
+    filename_date_template: str,
+) -> tuple[re.Pattern[str], list[tuple[str, str]]]:
+    """Compile filename_date_template into a regex and a placeholder list.
+
+    Supports glob wildcards in literals:
+    - '*' => '.*'
+    - '?' => '.'
+    """
+    ph_re = re.compile(r"\{(final|initial):([^}]+)\}")
+    placeholders: list[tuple[str, str]] = []
+    last = 0
+    pattern_parts: list[str] = []
+
+    def _escape_literal_with_glob(lit: str) -> str:
+        esc = re.escape(lit)
+        return esc.replace(r"\*", ".*").replace(r"\?", ".")
+
+    def _strftime_to_regex(fmt: str) -> str:
+        mapping = {
+            "%Y": r"\d{4}",
+            "%y": r"\d{2}",
+            "%m": r"\d{2}",
+            "%d": r"\d{2}",
+            "%H": r"\d{2}",
+            "%M": r"\d{2}",
+            "%S": r"\d{2}",
+            "%f": r"\d+",
+            "%j": r"\d{3}",
+        }
+        return re.sub(r"%[A-Za-z]", lambda mm: mapping.get(mm.group(0), r".+?"), fmt)
+
+    for m in ph_re.finditer(filename_date_template):
+        placeholders.append((m.group(1), m.group(2)))
+
+        literal = filename_date_template[last : m.start()]
+        pattern_parts.append(_escape_literal_with_glob(literal))
+
+        fmt = m.group(2)
+        pattern_parts.append(f"({_strftime_to_regex(fmt)})")
+
+        last = m.end()
+
+    pattern_parts.append(_escape_literal_with_glob(filename_date_template[last:]))
+
+    full_re = "^" + "".join(pattern_parts) + "$"
+    return re.compile(full_re), placeholders
 
 
 def _parse_filename(
@@ -186,60 +291,15 @@ def _parse_filename(
 
     # find placeholders in order
     if filename_date_template:
-        ph_re = re.compile(r"\{(final|initial):([^}]+)\}")
-        placeholders = []
-        last = 0
-        pattern_parts = []
-
-        def _escape_literal_with_glob(lit: str) -> str:
-            # escape all regex metachars then replace escaped glob tokens back to regex
-            esc = re.escape(lit)
-            # allow '*' and '?' in template to act as glob wildcards
-            esc = esc.replace(r"\*", ".*").replace(r"\?", ".")
-            return esc
-
-        for m in ph_re.finditer(filename_date_template):
-            placeholders.append((m.group(1), m.group(2)))
-            # escape literal between placeholders but keep '*' and '?' as wildcards
-            literal = filename_date_template[last : m.start()]
-            pattern_parts.append(_escape_literal_with_glob(literal))
-
-            # convert strftime -> simple regex
-            fmt = m.group(2)
-
-            def _strftime_to_regex(s: str) -> str:
-                mapping = {
-                    "%Y": r"\d{4}",
-                    "%y": r"\d{2}",
-                    "%m": r"\d{2}",
-                    "%d": r"\d{2}",
-                    "%H": r"\d{2}",
-                    "%M": r"\d{2}",
-                    "%S": r"\d{2}",
-                    "%f": r"\d+",
-                    "%j": r"\d{3}",
-                }
-                return re.sub(
-                    r"%[A-Za-z]", lambda mm: mapping.get(mm.group(0), r".+?"), s
-                )
-
-            pattern_parts.append(f"({_strftime_to_regex(fmt)})")
-            last = m.end()
-
-        # tail literal (may contain '*'/'?')
-        pattern_parts.append(_escape_literal_with_glob(filename_date_template[last:]))
-        full_re = "^" + "".join(pattern_parts) + "$"
-        m = re.match(full_re, stem)
+        rx, placeholders = _compile_filename_date_template(filename_date_template)
+        m = rx.match(stem)
         if not m:
             raise ValueError(f"Filename does not match template: {file_path.name}")
 
         groups = list(m.groups())
-        vals = {}
+        vals: dict[str, datetime] = {}
         for (ph, fmt), val in zip(placeholders, groups):
-            try:
-                vals[ph] = datetime.strptime(val, fmt)
-            except Exception as e:
-                raise ValueError(f"Failed parsing '{val}' with format '{fmt}': {e}")
+            vals[ph] = datetime.strptime(val, fmt)
 
         if "final" not in vals or "initial" not in vals:
             raise ValueError("Template must contain both {final:...} and {initial:...}")
@@ -412,7 +472,7 @@ def _read_dic_file(file_path: Path, *, invert_y: bool) -> dict[str, np.ndarray]:
     return data
 
 
-def _load_all_from_disk_into_cache(
+def _load_data_to_cache(
     *,
     data_dir: str | Path,
     file_search_pattern: str = "*.txt",
@@ -422,8 +482,14 @@ def _load_all_from_disk_into_cache(
     invert_y: bool = False,
     dt_days_preferred: int | None,
     dt_days_tolerance: int = 1,
+    reference_date_start: datetime | None = None,
+    reference_date_end: datetime | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> int:
     """Load all DIC files from disk into the global cache (one record per file).
+
+    If final_date_start/end are provided, only files whose FINAL date is within
+    [final_date_start, final_date_end] (inclusive, date-based) are loaded.
 
     Args:
         data_dir: Root directory containing DIC files.
@@ -442,8 +508,9 @@ def _load_all_from_disk_into_cache(
     data_path = Path(data_dir)
     files = sorted(data_path.glob(file_search_pattern))
 
-    loaded = 0
-    for f in tqdm(files, desc="Loading DIC files", unit="file"):
+    # Pre-filter files by parsing filenames and applying date / dt filters
+    candidates: list[tuple[Path, datetime, datetime, int, int]] = []
+    for f in files:
         try:
             final_date, initial_date = _parse_filename(
                 f,
@@ -451,19 +518,37 @@ def _load_all_from_disk_into_cache(
                 filename_pattern=filename_pattern,
                 date_format=date_format,
             )
+        except Exception:
+            logger.error(f"Skipping {f.name}: filename parsing failed")
+            continue
 
-            # Compute time difference
-            dt_hours = int(abs((final_date - initial_date).total_seconds()) / 3600)
-            dt_days = int(dt_hours / 24)
+        # Filter by Reference date
+        if reference_date_start and final_date.date() < reference_date_start.date():
+            continue
+        if reference_date_end and final_date.date() > reference_date_end.date():
+            continue
 
-            # Optional filtering by preferred dt
-            if dt_days_preferred is not None and int(dt_days_preferred) > 0:
-                skip_file = abs(dt_days - int(dt_days_preferred)) > max(
-                    0, int(dt_days_tolerance)
-                )
-                if skip_file:
-                    continue
+        # Compute time difference
+        dt_hours = int(abs((final_date - initial_date).total_seconds()) / 3600)
+        dt_days = int(dt_hours / 24)
 
+        # Filter by preferred dt
+        if dt_days_preferred is not None and int(dt_days_preferred) > 0:
+            skip_file = abs(dt_days - int(dt_days_preferred)) > max(
+                0, int(dt_days_tolerance)
+            )
+            if skip_file:
+                continue
+
+        candidates.append((f, final_date, initial_date, dt_hours, dt_days))
+
+    total = len(candidates)
+    done = 0
+    loaded = 0
+    for f, final_date, initial_date, dt_hours, dt_days in tqdm(
+        candidates, desc="Loading DIC files", unit="file", total=total
+    ):
+        try:
             # Read DIC data
             dic_data = _read_dic_file(f, invert_y=invert_y)
             dx = dic_data["dx"]
@@ -510,8 +595,13 @@ def _load_all_from_disk_into_cache(
             loaded += 1
 
         except Exception as e:
-            logger.warning(f"Skipping {f.name}: {e}")
+            logger.error(f"Skipping {f.name}: {e}")
             continue
+
+        finally:
+            done += 1
+            if progress_callback:
+                progress_callback(done, total)
 
     logger.info(f"Loaded {loaded} DIC files from disk (records={cache.num_records})")
     return loaded

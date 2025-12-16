@@ -1,16 +1,3 @@
-/**
- * Frontend controller for:
- * - velocity map (upper plot)
- * - time series (lower plot)
- * - dt selection controls
- * - optional DB loader controls
- *
- * Design goals:
- * - never crash on missing DOM nodes (guards everywhere)
- * - keep API calls in 1 place
- * - keep globals minimal (only what template uses)
- */
-
 // -----------------------------------------------------------------------------
 // Global state (used by template too)
 // -----------------------------------------------------------------------------
@@ -53,14 +40,6 @@ function toNumberOrNull(x) {
   if (s === "") return null;
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
-}
-
-// Only used in this file (template already has iso helpers)
-function displayToIso(displayDate) {
-  // "DD/MM/YYYY" -> "YYYY-MM-DD"
-  const [day, month, year] = String(displayDate).split("/");
-  if (!day || !month || !year) return null;
-  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
 // -----------------------------------------------------------------------------
@@ -117,6 +96,63 @@ function syncDtControls() {
   }
 }
 
+
+// -----------------------------------------------------------------------------
+// Data loading
+// -----------------------------------------------------------------------------
+async function startLoad() {
+  const startDate = valueOf("load-start-picker", null); // expected "YYYY-MM-DD" (flatpickr)
+  const endDate = valueOf("load-end-picker", null);
+
+  const url = new URL("/api/loader/load", window.location.origin);
+  if (startDate) url.searchParams.set("start_date", startDate);
+  if (endDate) url.searchParams.set("end_date", endDate);
+
+  console.info("Requesting load", { startDate, endDate, url: url.toString() });
+
+  const res = await fetch(url.toString(), { method: "POST" });
+  if (!res.ok) {
+    console.error("load request failed", await res.text());
+    alert("Failed to start loading: " + (await res.text()));
+    return;
+  }
+
+  console.info("load started successfully");
+
+  const progressEl = el("load-progress");
+  const statusEl = el("load-status");
+  if (progressEl) progressEl.style.display = "block";
+  if (statusEl) statusEl.textContent = "Loading...";
+
+  const poll = setInterval(async () => {
+    const urlProg = new URL("/api/loader/progress", window.location.origin);
+    const r = await fetch(urlProg.toString());
+    if (!r.ok) {
+      if (statusEl) statusEl.textContent = "Failed to read progress.";
+      console.error("progress polling failed", await r.text());
+      clearInterval(poll);
+      return;
+    }
+
+    const p = await r.json();
+    console.debug("load-range progress", p);
+
+    if (progressEl) {
+      if (p.total && p.total > 0) {
+        progressEl.value = Math.round((p.done / p.total) * 100);
+      } else {
+        progressEl.value = 0;
+      }
+    }
+
+    if (!p.in_progress) {
+      if (statusEl) statusEl.textContent = p.error ? `Error: ${p.error}` : "Load complete";
+      clearInterval(poll);
+
+      window.location.reload();
+    }
+  }, 500);
+}
 // -----------------------------------------------------------------------------
 // API calls + plotting
 // -----------------------------------------------------------------------------
@@ -139,7 +175,7 @@ async function fetchVelocityMap() {
   const markerSize = valueOf("marker-size", "6");
   const markerOpacity = valueOf("marker-opacity", "auto");
 
-  const url = new URL("/api/velocity-map", window.location.origin);
+  const url = new URL("/api/velocitymap", window.location.origin);
   url.searchParams.set("reference_date", window.currentDate);
   url.searchParams.set("use_velocity", String(useVelocity));
   url.searchParams.set("plot_type", plotType);
@@ -227,12 +263,12 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
 
   const xminIso = (() => {
     const d = valueOf("xmin-date-picker", null);
-    return d ? displayToIso(d) : null;
+    return d ? d : null;
   })();
 
   const xmaxIso = (() => {
     const d = valueOf("xmax-date-picker", null);
-    return d ? displayToIso(d) : null;
+    return d ? d : null;
   })();
 
   const ymin = valueOf("ymin", null);
@@ -294,73 +330,13 @@ async function runTSInversion() {
     }
   }
 }
-
-// -----------------------------------------------------------------------------
-// DB loader controls (kept, but guarded and isolated)
-// -----------------------------------------------------------------------------
-async function startLoadRange() {
-  if (!window.USE_DATABASE) {
-    alert("Load range only available for database backend.");
-    return;
-  }
-
-  const startDate = valueOf("load-start-picker", null);
-  const endDate = valueOf("load-end-picker", null);
-  if (!startDate || !endDate) {
-    alert("Please select both start and end dates.");
-    return;
-  }
-
-  const url = new URL("/api/loader/load-range", window.location.origin);
-  url.searchParams.set("start_date", startDate);
-  url.searchParams.set("end_date", endDate);
-
-  const res = await fetch(url.toString(), { method: "POST" });
-  if (!res.ok) {
-    alert("Failed to start loading: " + (await res.text()));
-    return;
-  }
-
-  const progressEl = el("load-progress");
-  const statusEl = el("load-status");
-  if (progressEl) progressEl.style.display = "block";
-  if (statusEl) statusEl.textContent = "Loading...";
-
-  const poll = setInterval(async () => {
-    const urlProg = new URL("/api/loader/progress", window.location.origin);
-    const r = await fetch(urlProg.toString());
-    if (!r.ok) {
-      if (statusEl) statusEl.textContent = "Failed to read progress.";
-      clearInterval(poll);
-      return;
-    }
-
-    const p = await r.json();
-    if (progressEl) {
-      if (p.total && p.total > 0) {
-        progressEl.value = Math.round((p.done / p.total) * 100);
-      } else {
-        progressEl.value = 0;
-      }
-    }
-
-    if (!p.in_progress) {
-      if (statusEl) statusEl.textContent = p.error ? `Error: ${p.error}` : "Load complete";
-      clearInterval(poll);
-
-      // refresh plots if possible
-      if (window.currentDate) {
-        fetchVelocityMap();
-        if (window.selectedNode) fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
-      }
-    }
-  }, 1000);
-}
-
 // -----------------------------------------------------------------------------
 // Initialization / event wiring
 // -----------------------------------------------------------------------------
 function wireControls() {
+  // Data load range button (now always enabled)
+  on("load-data", "click", startLoad);
+
   // Velocity map reactive controls
   on("use-velocity", "change", () => {
     if (!window.currentDate) return;
@@ -407,36 +383,16 @@ function wireControls() {
 
   // TS inversion button
   on("ts-inversion", "click", runTSInversion);
-
-  // DB load range button
-  on("load-data", "click", startLoadRange);
-
-  // Disable DB load controls if not in DB mode
-  if (!window.USE_DATABASE) {
-    const ids = ["load-start-picker", "load-end-picker", "load-data"];
-    for (const id of ids) {
-      const n = el(id);
-      if (n) n.disabled = true;
-    }
-  }
 }
 
 function initialPlot() {
-  // index.html sets #date-raw; we mirror it into window.currentDate here
-  const raw = valueOf("date-raw", null);
-  if (raw) {
-    window.currentDate = raw;
-    fetchVelocityMap();
-  }
+  // Intentionally empty: do NOT auto-load a plot on startup.
+  // The main date picker (in the template) triggers fetchVelocityMap()
+  // when the user selects a date.
 }
-
+// ...existing code...
 // Single entry point
 document.addEventListener("DOMContentLoaded", () => {
   syncDtControls();
   wireControls();
-});
-
-// Wait for window load so template + flatpickr had time to set #date-raw
-window.addEventListener("load", () => {
-  setTimeout(initialPlot, 100);
 });

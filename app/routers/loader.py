@@ -1,89 +1,75 @@
-from datetime import datetime
+import threading
+import traceback
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException
 
-from ..cache import cache
 from ..config import get_logger, get_settings
-from ..services import get_data_provider
+from ..services import DataProvider, get_data_provider
 
 logger = get_logger()
 settings = get_settings()
 
 router = APIRouter()
 
+_lock = threading.Lock()
+_state = {"in_progress": False, "done": 0, "total": 0, "error": None}
 
-@router.post("/load-range")
-async def load_range(
-    start_date: str,
-    end_date: str,
-    background_tasks: BackgroundTasks,
-):
-    """Start Loading a date range (DB backend only). Returns 202 and starts background task."""
-    if not settings.use_database:
-        raise HTTPException(
-            status_code=400, detail="Load range is only available with DB backend."
-        )
 
-    provider = get_data_provider()
+def worker(
+    provider: DataProvider, start_date: str | None, end_date: str | None
+) -> None:
+    def progress(done: int, total: int):
+        with _lock:
+            _state["done"] = int(done)
+            _state["total"] = int(total)
 
-    # quick validation of dates
     try:
-        # will raise ValueError if invalid
-        for s in (start_date, end_date):
-            if "-" in s:
-                datetime.strptime(s, "%Y-%m-%d")
-            else:
-                datetime.strptime(s, "%Y%m%d")
-    except Exception:
-        raise HTTPException(
-            status_code=400, detail="Invalid date format; use YYYYMMDD or YYYY-MM-DD"
-        )
-
-    def progress_callback(done, total):
-        cache.load_done = done
-        cache.load_total = total
-
-    def _do_load():
-        try:
+        # If no dates provided -> load all (both backends should support load_all)
+        if not start_date and not end_date:
+            provider.load_all()
+        else:
+            # Accept missing bounds too (interpret as open interval)
             provider.load_range(
-                start_date, end_date, progress_callback=progress_callback
+                start_date or "", end_date or "", progress_callback=progress
             )
-        except Exception as e:
-            logger.error("DB preload failed", exc_info=True)
-            cache.load_in_progress = False
-            cache.load_error = str(e)
+    except Exception as e:
+        # Log full traceback and store it in the state so the frontend can show details
+        tb = traceback.format_exc()
+        logger.error(f"Background load failed: {e}\n{tb}")
+        with _lock:
+            _state["error"] = tb
+            _state["in_progress"] = False
 
-    # ensure previous load not in progress
-    if cache.load_in_progress:
-        raise HTTPException(
-            status_code=409, detail="Another loading operation is in progress."
-        )
-
-    cache.load_in_progress = True
-    cache.load_total = 0
-    cache.load_done = 0
-    cache.load_error = None
-    cache.load_start_date = start_date
-    cache.load_end_date = end_date
-
-    background_tasks.add_task(_do_load)
-    return JSONResponse(
-        {"status": "accepted", "start_date": start_date, "end_date": end_date},
-        status_code=202,
-    )
+    finally:
+        with _lock:
+            _state["in_progress"] = False
 
 
-@router.get("/progress")
-async def progress() -> JSONResponse:
-    """Return progress metadata for the current load task."""
-    return JSONResponse(
-        {
-            "in_progress": cache.load_in_progress,
-            "total": cache.load_total,
-            "done": cache.load_done,
-            "start_date": cache.load_start_date,
-            "end_date": cache.load_end_date,
-            "error": cache.load_error,
-        }
-    )
+@router.post("/loader/load", tags=["loader"])
+def load_data(start_date: str | None = None, end_date: str | None = None):
+    logger.debug(f"API /loader/load called start_date={start_date} end_date={end_date}")
+
+    with _lock:
+        if _state["in_progress"]:
+            raise HTTPException(status_code=409, detail="Load already in progress")
+        _state.update({"in_progress": True, "done": 0, "total": 0, "error": None})
+
+    # Validate provider early to fail fast if misconfigured
+    try:
+        provider = get_data_provider()
+        _ = provider.get_available_dates()
+    except Exception as e:
+        logger.exception("Provider initialization failed")
+        raise HTTPException(status_code=500, detail=f"Provider init error: {e}") from e
+
+    # Start background thread
+    threading.Thread(
+        target=worker, args=(provider, start_date, end_date), daemon=True
+    ).start()
+    return {"status": "started"}
+
+
+@router.get("/loader/progress", tags=["loader"])
+def get_progress():
+    with _lock:
+        return dict(_state)

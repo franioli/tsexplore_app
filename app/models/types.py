@@ -24,12 +24,12 @@ class VelocityMapRequest(BaseModel):
     @field_validator("date")
     @classmethod
     def validate_date_format(cls, v: str) -> str:
-        """Validate date is in YYYYMMDD format."""
+        """Validate date is in YYYY-MM-DD format."""
         try:
-            datetime.strptime(v, "%Y%m%d")
+            datetime.strptime(v, "%Y-%m-%d")
             return v
         except ValueError as e:
-            raise ValueError("Date must be in YYYYMMDD format") from e
+            raise ValueError("Date must be in YYYY-MM-DD format") from e
 
 
 class PlotlyFigure(BaseModel):
@@ -114,9 +114,9 @@ class TimeSeriesResponse(BaseModel):
         """Ensure dates are YYYYMMDD formatted strings."""
         for d in v:
             try:
-                datetime.strptime(d, "%Y%m%d")
+                datetime.strptime(d, "%Y-%m-%d")
             except ValueError:
-                raise ValueError("Dates must be list of strings in YYYYMMDD format")
+                raise ValueError("Dates must be list of strings in YYYY-MM-DD format")
         return v
 
 

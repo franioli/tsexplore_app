@@ -18,7 +18,7 @@ settings = get_settings()
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/timeseries", summary="Get timeseries figure", tags=["timeseries"])
 async def timeseries(
     node_x: float = Query(...),
     node_y: float = Query(...),
@@ -80,7 +80,7 @@ async def timeseries(
         raise HTTPException(status_code=404, detail="No timeseries data for node")
 
     # core plotting inputs
-    dates = [datetime.strptime(d, "%Y%m%d") for d in ts["dates"]]
+    dates = [datetime.strptime(d, "%Y-%m-%d") for d in ts["dates"]]
     comp_list = [c.strip() for c in components.split(",") if c.strip()]
 
     if use_velocity:

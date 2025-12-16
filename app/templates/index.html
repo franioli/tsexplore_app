@@ -41,10 +41,23 @@
       gap: 12px;
     }
 
+    .controls-grid--load {
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
     .control-group {
       display: flex;
       flex-direction: column;
       gap: 4px;
+    }
+
+    .load-range-row,
+    .dt-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
     .control-label {
@@ -125,17 +138,45 @@
   <!-- Data Loading -->
   <div class="panel">
     <div class="panel-title">DIC Data Loading</div>
-    <div class="controls-grid">
+
+    <!-- Load controls -->
+    <div class="controls-grid controls-grid--load">
       <div class="control-group">
-        <label class="control-label">Load range (DB only)</label>
-        <div style="display:flex; gap:4px; align-items:center;">
-          <input type="text" id="load-start-picker" placeholder="Start date (optional)" />
-          <input type="text" id="load-end-picker" placeholder="End date (optional)" />
-          <button id="load-data" style="padding:6px 12px;">Load</button>
+        <label class="control-label">Date range</label>
+        <div class="load-range-row">
+          <input type="text" id="load-start-picker" placeholder="Start date" style="flex:1 1 140px; min-width:120px;" />
+          <input type="text" id="load-end-picker" placeholder="End date" style="flex:1 1 140px; min-width:120px;" />
+          <button id="load-data" style="padding:6px 12px; flex:0 0 auto; min-width:80px;">Load</button>
         </div>
-        <progress id="load-progress" value="0" max="100" style="width:100%; display:none;"></progress>
-        <div id="load-status" style="font-size:12px;color:#6c757d;"></div>
+
+        <!-- Load status -->
+        <div class="control-group">
+          <label class="control-label">Load status</label>
+          <progress id="load-progress" value="0" max="100" style="width:100%; display:none;"></progress>
+          <div id="load-status" style="font-size:12px;color:#6c757d;"></div>
+          <div id="no-data-hint" style="font-size:12px;color:#6c757d; display:none;">
+            No data loaded yet. Use <b>Load</b> to import files / query DB.
+          </div>
+        </div>
       </div>
+
+      <div class="control-group">
+        <label class="control-label">DIC interval (dt)</label>
+        <select id="dt-mode">
+          <option value="auto" selected>Auto</option>
+          <option value="exact">Exact dt (days)</option>
+          <option value="closest">Closest dt (days) within tolerance</option>
+          <option value="all">All dt (plot every available interval)</option>
+        </select>
+        <div class="dt-row">
+          <input type="number" id="dt-days" step="1" min="0" placeholder="dt days" style="width: 110px;" disabled />
+          <input type="number" id="dt-tolerance" step="1" min="0" placeholder="± tol" style="width: 90px;" disabled />
+        </div>
+        <div style="font-size:12px;color:#6c757d;">
+          Use <code>Auto</code> or request a specific interval. Tolerance is used only for “Closest”.
+        </div>
+      </div>
+
       <div class="control-group">
         <label class="control-label">Use Velocity</label>
         <div class="checkbox-group">
@@ -148,45 +189,30 @@
         <input type="number" id="radius" value="10" step="1" />
       </div>
     </div>
+
+
   </div>
 
-  <!-- Velocity Map Controls -->
+  </div>
+
+  <!-- Velocity Field Controls -->
   <div class="panel">
     <div class="panel-title">Velocity Field</div>
     <div class="controls-grid">
 
-      <!-- Plot Date -->
       <div class="control-group">
         <label class="control-label">Select Reference Date</label>
-        <div style="font-size:12px;color:#6c757d;">
-          Reference date = <b>final image date</b> used for the DIC computation.
-        </div>
-        <div style="gap: 4px; align-items: center;">
-          <button id="prev-date" style="padding: 6px 12px;" title="Previous date">◀</button>
-          <input type="text" id="date-picker" placeholder="Select date..." />
-          <button id="next-date" style="padding: 6px 12px;" title="Next date">▶</button>
-        </div>
-        <input type="hidden" id="date-raw" value="{{ dates_raw[0] if dates_raw else '' }}" />
-      </div>
-
-      <!-- DIC interval selection -->
-      <div class="control-group">
-        <label class="control-label">DIC interval (dt)</label>
-        <select id="dt-mode">
-          <option value="auto" selected>Auto</option>
-          <option value="exact">Exact dt (days)</option>
-          <option value="closest">Closest dt (days) within tolerance</option>
-          <option value="all">All dt (plot every available interval)</option>
-        </select>
-        <div style="display:flex; gap:6px; align-items:center;">
-          <input type="number" id="dt-days" step="1" min="0" placeholder="dt days" style="width: 110px;" disabled />
-          <input type="number" id="dt-tolerance" step="1" min="0" placeholder="± tol" style="width: 90px;" disabled />
+        <div style="display:flex; gap:8px; align-items:center; width:100%;">
+          <button id="prev-date" style="padding:6px 12px; height:36px; min-width:44px; flex:0 0 auto;"
+            title="Previous date">◀</button>
+          <input type="text" id="date-picker" placeholder="Select date..." style="flex:1 1 0; min-width:120px;" />
+          <button id="next-date" style="padding:6px 12px; height:36px; min-width:44px; flex:0 0 auto;"
+            title="Next date">▶</button>
         </div>
         <div style="font-size:12px;color:#6c757d;">
-          Use <code>Auto</code> or request a specific interval. Tolerance is used only for “Closest”.
+          Reference date = <b>final</b> DIC date.
         </div>
       </div>
-
 
       <div class="control-group">
         <label class="control-label">Plot Type</label>
@@ -239,11 +265,12 @@
     </div>
   </div>
 
+  <!-- Velocity Map div -->
   <div class="section-divider"></div>
   <div id="upper"></div>
   <div class="section-divider"></div>
 
-  <!-- Time Series Controls -->
+  <!-- Time Series -->
   <div class="panel">
     <div class="panel-title">Time Series</div>
     <div class="controls-grid">
@@ -292,118 +319,110 @@
     </div>
   </div>
 
+  <!-- Time Series div -->
+  <div class="section-divider"></div>
   <div id="lower"></div>
+
   <script>
-    const USE_DATABASE = {{ 'true' if use_database else 'false' }};
-    const datesIso = {{ dates_iso | tojson | safe }};
+    // Date sets provided by the backend (available for load / already loaded)
+    const availableDatesIso = {{ available_dates_iso | tojson | safe }};
+    const loadedDatesIso = {{ loaded_dates_iso | tojson | safe }};
 
-    // Helper function to convert ISO date to display format (DD/MM/YYYY)
-    function isoToDisplay(isoDate) {
-      const [year, month, day] = isoDate.split('-');
-      return `${day}/${month}/${year}`;
-    }
+    // Update the current selection and trigger redraw (store ISO only)
+    const updateCurrentReference = (iso) => {
+      if (window.currentDate !== iso) {
+        window.currentDate = iso;
+        window.selectedNode = null;
+        if (typeof fetchVelocityMap === "function") {
+          fetchVelocityMap();
+        }
+      }
+    };
 
-    // Helper function to convert ISO date to raw format (YYYYMMDD)
-    function isoToRaw(isoDate) {
-      return isoDate.replace(/-/g, '');
-    }
+    // Configure load-range pickers (only use available dates, ISO format)
+    flatpickr("#load-start-picker", {
+      enable: availableDatesIso,
+      dateFormat: "Y-m-d",
+      allowInput: true,
+      disableMobile: true,
+      defaultDate: availableDatesIso[0] ?? null,
+    });
 
-    let mainPicker = null;
+    flatpickr("#load-end-picker", {
+      enable: availableDatesIso,
+      dateFormat: "Y-m-d",
+      allowInput: true,
+      disableMobile: true,
+      defaultDate: availableDatesIso.at(-1) ?? null,
+    });
 
-    if (datesIso.length > 0) {
-      // Get first and last dates
-      const firstIso = datesIso[0];
-      const lastIso = datesIso[datesIso.length - 1];
-      const firstDisplay = isoToDisplay(firstIso);
-
-      // Main date picker for data loading
-      mainPicker = flatpickr("#date-picker", {
-        enable: datesIso,
-        dateFormat: "d/m/Y",
-        defaultDate: firstDisplay,
-        disableMobile: true,
-        onChange: function (selectedDates, dateStr) {
-          // Convert display format back to ISO to find index
-          const [day, month, year] = dateStr.split('/');
-          const isoDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-          const idx = datesIso.indexOf(isoDate);
-
-          if (idx >= 0) {
-            const newDate = isoToRaw(datesIso[idx]);
-            document.getElementById("date-raw").value = newDate;
-
-            // Trigger update if date changed
-            if (window.currentDate !== newDate) {
-              window.currentDate = newDate;
-              window.selectedNode = null; // Clear selection when changing dates
-
-              // Import from app.js
-              if (typeof fetchVelocityMap === 'function') {
-                fetchVelocityMap();
-              }
-            }
+    // Initialize the main date picker only once we have loaded dates
+    const initLoadedPicker = () => {
+      if (loadedDatesIso.length === 0) {
+        ["#date-picker", "#prev-date", "#next-date"].forEach((selector) => {
+          const node = document.querySelector(selector);
+          if (node) {
+            node.disabled = true;
           }
-        }
+        });
+        return;
+      }
+
+      // Main date picker for reference date selection (ISO only)
+      const firstIso = loadedDatesIso[0];
+      const lastIso = loadedDatesIso.at(-1);
+      const picker = flatpickr("#date-picker", {
+        enable: loadedDatesIso,
+        dateFormat: "Y-m-d",
+        defaultDate: firstIso,
+        disableMobile: true,
+        onChange(_selectedDates, dateStr) {
+          const isoDate = dateStr; // already "YYYY-MM-DD"
+          if (loadedDatesIso.includes(isoDate)) {
+            updateCurrentReference(isoDate);
+          }
+        },
       });
 
-      // Time series min date filter
+      // set current date to first loaded (ISO)
+      window.currentDate = firstIso;
+
+      // Previous / Next buttons
+      const changeOffset = (offset) => {
+        const activeIso = loadedDatesIso.find((iso) => iso === window.currentDate) ?? firstIso;
+        const idx = loadedDatesIso.indexOf(activeIso);
+        const targetIso = loadedDatesIso[idx + offset];
+        if (targetIso) {
+          picker.setDate(targetIso, true);
+          updateCurrentReference(targetIso);
+        }
+      };
+      document.getElementById("prev-date").addEventListener("click", () => changeOffset(-1));
+      document.getElementById("next-date").addEventListener("click", () => changeOffset(1));
+
+
+      // Time series x limit pickers (ISO)
       flatpickr("#xmin-date-picker", {
-        enable: datesIso,
-        dateFormat: "d/m/Y",
+        enable: loadedDatesIso,
+        dateFormat: "Y-m-d",
         allowInput: true,
         disableMobile: true,
-        defaultDate: firstDisplay,
+        defaultDate: firstIso,
       });
 
-      // Time series max date filter
       flatpickr("#xmax-date-picker", {
-        enable: datesIso,
-        dateFormat: "d/m/Y",
+        enable: loadedDatesIso,
+        dateFormat: "Y-m-d",
         allowInput: true,
         disableMobile: true,
-        defaultDate: isoToDisplay(lastIso),
+        defaultDate: lastIso,
       });
+    };
 
-      // Set initial raw date
-      document.getElementById("date-raw").value = isoToRaw(firstIso);
-
-      // Previous date button
-      document.getElementById("prev-date").addEventListener("click", () => {
-        const currentRaw = document.getElementById("date-raw").value;
-        // Find current ISO date
-        const currentIso = datesIso.find(iso => isoToRaw(iso) === currentRaw);
-        const currentIdx = datesIso.indexOf(currentIso);
-
-        if (currentIdx > 0) {
-          const newIdx = currentIdx - 1;
-          const newIso = datesIso[newIdx];
-          document.getElementById("date-raw").value = isoToRaw(newIso);
-          mainPicker.setDate(isoToDisplay(newIso), true); // This triggers onChange
-        }
-      });
-
-      // Next date button
-      document.getElementById("next-date").addEventListener("click", () => {
-        const currentRaw = document.getElementById("date-raw").value;
-        // Find current ISO date
-        const currentIso = datesIso.find(iso => isoToRaw(iso) === currentRaw);
-        const currentIdx = datesIso.indexOf(currentIso);
-
-        if (currentIdx < datesIso.length - 1) {
-          const newIdx = currentIdx + 1;
-          const newIso = datesIso[newIdx];
-          document.getElementById("date-raw").value = isoToRaw(newIso);
-          mainPicker.setDate(isoToDisplay(newIso), true); // This triggers onChange
-        }
-      });
-
-    } else {
-      console.error("No dates available");
-      alert("No data dates available. Check your DATA_DIR configuration.");
-    }
+    initLoadedPicker();
   </script>
-  <script src="/static/app.js"></script>
 
+  <script src="/static/app.js"></script>
 
 </body>
 

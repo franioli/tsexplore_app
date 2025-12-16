@@ -11,7 +11,12 @@ settings = get_settings()
 router = APIRouter()
 
 
-@router.get("/", response_model=NearestNodeResponse)
+@router.get(
+    "/nearest",
+    response_model=NearestNodeResponse,
+    summary="Find nearest node",
+    tags=["nearest"],
+)
 async def api_nearest(
     reference_date: str = Query(...),
     x: float = Query(...),

@@ -103,11 +103,16 @@ class DataCache:
         return self.kdtree is not None
 
     def get_available_dates(self) -> list[str]:
-        """Return loaded reference dates as YYYYMMDD strings.
+        """Return loaded reference dates as YYYY-MM-DD strings.
 
         The reference date corresponds to the final image date of the DIC pair.
         """
-        return sorted(self.records_by_reference.keys())
+        dates = set()
+        for ref_yyyymmdd in self.records_by_reference:
+            dt = datetime.strptime(ref_yyyymmdd, "%Y%m%d")
+            dates.add(dt.strftime("%Y-%m-%d"))
+
+        return sorted(dates)
 
     def get_dt_days_for_date(self, reference_yyyymmdd: str) -> list[int]:
         """Return available dt_days values for a given reference day.
