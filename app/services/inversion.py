@@ -7,7 +7,6 @@ Fusion of multi-temporal and multi-sensor ice velocity observations -
 """
 
 import datetime
-import glob
 import logging
 import os
 import time
@@ -19,7 +18,7 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-###=== Front-end functions ===###
+###=== Front-end function to launch time series inversion on all nodes ===###
 
 
 def run_ts_inversion(
@@ -86,7 +85,7 @@ def run_ts_inversion(
             weight_node = weight_data[:, node_idx]
 
             # -invert the node
-            result = invert_node(
+            result = invert_node_ND(
                 ew_series=ew_node,
                 ns_series=ns_node,
                 weight_series=weight_node,
@@ -132,10 +131,10 @@ def run_ts_inversion(
     return output
 
 
-###=== INVERSION BACK-END FUNCTIONS ===####
+###=== DIC DATA LOADING FUNCTION ===###
 
 
-def load_dic_data(day_dic_dir: Path):
+def load_dic_data(day_dic_dir: Path, file_pattern: str = "day*.txt"):
     """
     Load all DIC displacement data from day_*.txt files.
 
@@ -157,9 +156,9 @@ def load_dic_data(day_dic_dir: Path):
     if not day_dic_dir.exists():
         raise FileNotFoundError(f"Directory {day_dic_dir} does not exist.")
 
-    data_files = sorted(glob.glob(f"{day_dic_dir}/day*.txt"))
+    data_files = sorted(day_dic_dir.glob(file_pattern))
     if not data_files:
-        raise FileNotFoundError(f"No day*.txt files found in {day_dic_dir}")
+        raise FileNotFoundError(f"No {file_pattern} files found in {day_dic_dir}")
 
     # -leggo il primo file per determinare numero di nodi
     meta = np.loadtxt(data_files[0], delimiter=",")
@@ -212,147 +211,205 @@ def load_dic_data(day_dic_dir: Path):
     }
 
 
-def GLS_solver(y, A, weight=None, regularisation=None, l=1.0):
-    """
-    General least square solver
-    y is the nxn matrix of observation
-    A is the nxp design matrix
-    weight is the nxn weight diagonal matrix
-    regularisation is the pxp regularisation diagonal matrix
-    l is the scaling parameter
-    """
-    if weight is None:
-        W = np.diag(np.ones(y.shape))
-    else:
-        W = weight
-    if regularisation is None:
-        X = np.linalg.inv(A.T @ W @ A) @ A.T @ W @ y
-    else:
-        L = regularisation
-        # -calcolo risultato GLS
-        X = np.linalg.inv(A.T @ W @ A + l * (L.T @ L)) @ A.T @ W @ y
-    return X
+###=== INVERSION BACK-END FUNCTIONS ===####
 
 
-def hat_matrix_pure(A, W):
-    H = np.diag(A @ np.linalg.inv(A.T @ W @ A) @ A.T @ W)
-    return H
-
-
-def hat_matrix(A, W, L, l):
-    H = np.diag(A @ np.linalg.inv(A.T @ W @ A + l * (L.T @ L)) @ A.T @ W)
-    return H
-
-
-def weight_update(X, y, A, weight=None, regularisation=None, l=1, W0=None):
-    """
-    update weight matrix according to Tukey0s biweight function
-    X is the result matrix
-    y is the nxn matrix of observation
-    A is the nxp design matrix
-    weight is the nxn weight diagonal matrix
-    regularisation is the pxp regularisation diagonal matrix
-    l is the scaling parameter
-    """
-    # -observations
-    n = A.shape[0]
-    # -numero incognite
-    p = A.shape[1]
-    if weight is None:
-        W = np.diag(np.ones(y.shape))
-    else:
-        W = weight
-    if W0 is None:
-        W0 = np.diag(np.ones(y.shape))
-    if regularisation is None:
-        # H = np.diag(A @ np.linalg.inv(A.T @ W @ A) @ A.T @ W)
-        H = hat_matrix_pure(A, W)
-    else:
-        L = regularisation
-        # leverage da hat matrix
-        H = hat_matrix(A, W, L, l)
-        # H = np.diag(A @ np.linalg.inv(A.T @ W @ A + l*L.T @ L) @ A.T @ W)
-    # -calcolo residui
-    Ru = np.abs((A @ X) - y)
-    # -standard deviation dei residui
-    sigma = (np.sum((Ru**2) / (n - p))) ** 0.5
-    # -studentized residulas
-    Zu = Ru / (sigma * (1 - H) ** 0.5)
-    # -Tukey's biweight funtion
-    const = 4.685  # constant term
-    z = Zu / np.diag(W0 + 0.001)  # add a small value to avoid divide by zeor
-    # -pongo z maggiore di const per i W0 =
-    # z[np.diag(W0)==0] = 5
-    psi = np.zeros(len(z))
-    mask = np.abs(z) < const
-    psi[mask] = (1 - (Zu[mask] / const) ** 2) ** 2
-    # -update weight matrix
-    Wu = np.diag(psi)
-    Wu = Wu * 1 / (np.mean(np.diag(Wu)))
-    return Wu, Ru
-
-
-def weight_definition(
-    ew,  # east-west component
-    ns,  # north-south comnponent
-    method="residuals",  # residuls / uniform / Charrier / variable
-    deltat=None,  # delta tra le osservazioni
-    EW=None,  # east-west voxels
-    NS=None,  # north-south voxels
-    c=None,  # i-j coordinates
-    cc=None,  # variable used as initial weight
+def invert_node(
+    ew_series: np.ndarray,
+    ns_series: np.ndarray,
+    timestamp: np.ndarray,
+    weight_method: Literal["residuals", "uniform", "charrier", "variable"] = "charrier",
+    weight_variable: np.ndarray | None = None,
+    regularization_method: Literal["laplacian", "none"] = "laplacian",
+    lambda_scaling: float | str = 1.0,
+    iterates: int = 10,
 ):
-    if method == "uniform":
-        # -Pesi uniformi
-        W0 = np.diag(np.ones(len(ew)))
-    elif method == "Charrier":
-        ii, jj = c[0], c[1]
-        Iew = EW[ii - 1 : ii + 2, jj - 1 : jj + 2, :].squeeze() / deltat.squeeze()
-        Ins = NS[ii - 1 : ii + 2, jj - 1 : jj + 2, :].squeeze() / deltat.squeeze()
-        # -calcolo Zscore delle componenti rispetto
-        tew = np.nanmedian(Iew)
-        tns = np.nanmedian(Ins)
-        Zew = np.abs(ew - tew) / np.median(np.abs(ew - tew))
-        Zns = np.abs(ns - tns) / np.median(np.abs(ns - tns))
-        # -cappo a mad=1
-        mad = 1 / (Zew * Zns + 0.004)
-        mad = mad / np.max(mad)
-        # mad[mad>3] = 3
-        # -calcolo prodotto scalare
-        MA = ((ew + ns * 1j) * np.conj(np.median(Iew + Ins * 1j))) / (
-            np.abs(ew + ns * 1j) * np.abs(np.median(Iew + Ins * 1j))
-        )
-        MA = MA.real  # * 3
-        MA[MA < 0] = 0
-        # -Pesi con prodotto termini di similarità
-        weights = mad * MA
-        W0 = np.diag(weights) / np.sum(weights).astype("float32")
-    elif method == "residuals":
-        # -Pesi basati sui residui
-        y = ew.reshape(-1, 1) / deltat.reshape(-1, 1)
-        # -provo a usarela media invece della mediana --> MOLTO MEGLIO!
-        # mad1 = np.abs(y - np.median(y)) / np.median(np.abs(y-np.median(y)))
-        mad1 = np.abs(y - np.mean(y)) / np.mean(np.abs(y - np.mean(y)))
-        y = ns.reshape(-1, 1) / deltat.reshape(-1, 1)
-        # mad2 = np.abs(y - np.median(y)) / np.median(np.abs(y-np.median(y)))
-        mad2 = np.abs(y - np.mean(y)) / np.mean(np.abs(y - np.mean(y)))
-        epsilon = 10e-4
-        mad = 1 / (mad1 * mad2 + epsilon)
-        # -metto capping a mad=3
-        # mad[mad>3] = 3
-        # -correggo eventuali inf
-        mad[np.isinf(mad)] = np.max(mad[~np.isinf(mad)])
-        W0 = np.diag(mad.squeeze()) / np.mean(mad)
-        # huber = HuberRegressor().fit(deltat.reshape(-1,1), )
-        # Wew = huber.predict(deltat.reshape(-1,1))
-    elif method == "variable":
-        # -Pesi con correlazione
-        W0 = np.diag(cc) / np.mean(cc).astype("float32")
+    """
+    Run time series inversion for a single node.
 
-    return W0
+    Args:
+        ew_series: (n_observations,) array of EW displacement for this node
+        ns_series: (n_observations,) array of NS displacement for this node
+        weight_series: (n_observations,) array of weights for this node
+        timestamp: (n_observations, 2) array of timestamps
+        iterates: Maximum number of iterations
+        weight_method: Method for initial weight definition. Options:
+            - "residuals": Based on MAD of residuals (default)
+            - "uniform": Uniform weights
+            - "variable": Use provided weight_variable array
+            - "charrier": Spatial coherence method (requires EW/NS volumes)
+        weight_variable: (n_observations,) array to use as initial weights
+            when weight_method="variable". E.g., ensemble MAD for each timestamp.
+        regularization_method: Method for regularization term. Options:
+            - "laplacian": First-order Laplacian smoothing (default)
+            - "none": No regularization
+        lambda_scaling: Scaling parameter for regularization. Options:
+            - float: Fixed value (default: 1.0)
+            - "auto_std": lambda = mean(deltat) * std(component)
+            - "auto_mad": lambda = mean(deltat) * 3*MAD(component)
+
+    Returns:
+        Dictionary with inversion results or None if data is invalid
+    """
+
+    logger.info("Starting inversion for single node with the following options:")
+    logger.info(
+        f"  weight_method={weight_method}, "
+        f"  regularization_method={regularization_method}, "
+        f"  lambda_scaling={lambda_scaling}, iterates={iterates}"
+    )
+
+    # -estraggo spostamento
+    ew = ew_series.squeeze()
+    ns = ns_series.squeeze()
+
+    # -check per nan o -9999
+    nanflag = np.any(np.isnan(ew)) or np.any(np.isnan(ns))
+    ninenineflag = np.any(ew == -9999) or np.any(ns == -9999)
+
+    if nanflag or ninenineflag:
+        logger.error("Node contains invalid data")
+        return None
+
+    # -calcolo vettore deltaT
+    deltat = np.abs(np.diff(timestamp, axis=1).astype("float32")).squeeze()
+
+    # -creo vettore dei tempi per le osservazioni
+    Tu = np.sort(np.unique(timestamp))
+    Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
+    for i in range(len(Tu) - 1):
+        Time_hat[i, :] = [Tu[i], Tu[i + 1]]
+    DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
+
+    # -inizializzo matrice di regressione A
+    A = np.zeros((len(ew), Time_hat.shape[0])).astype("float32")
+    for i in range(timestamp.shape[0]):
+        pun = (Time_hat[:, 0] >= timestamp[i, 0]) & (Time_hat[:, 1] <= timestamp[i, 1])
+        A[i, pun] = 1
+
+    # -observations e incognite
+    n = A.shape[0]
+    p = A.shape[1]
+
+    # -calcolo le due componenti
+    EW_hat = np.zeros(len(DT_hat), dtype="float32")
+    NS_hat = np.zeros(len(DT_hat), dtype="float32")
+
+    comps = [ew, ns]
+    comp_names = ["EW", "NS"]
+
+    for enum, (comp, comp_name) in enumerate(zip(comps, comp_names)):
+        # -definisco i pesi iniziali in base al metodo scelto
+        if weight_method == "residuals":
+            W0 = weight_definition(ew, ns, method="residuals", deltat=deltat)
+        elif weight_method == "uniform":
+            W0 = weight_definition(ew, ns, method="uniform")
+        elif weight_method == "variable":
+            if weight_variable is None:
+                raise ValueError(
+                    "weight_variable must be provided when weight_method='variable'"
+                )
+            if len(weight_variable) != len(ew):
+                raise ValueError(
+                    f"weight_variable length {len(weight_variable)} must match "
+                    f"ew_series length {len(ew)}"
+                )
+            W0 = weight_definition(ew, ns, method="variable", cc=weight_variable)
+        elif weight_method == "charrier":
+            # Note: Charrier method requires EW/NS which are not available
+            # in single-node inversion. This would need to be passed as additional args.
+            raise NotImplementedError(
+                "Charrier method requires EW/NS volumes - not available in single-node mode"
+            )
+        else:
+            raise ValueError(
+                f"Invalid weight_method: {weight_method}. "
+                "Valid options: 'residuals', 'uniform', 'variable', 'charrier'"
+            )
+
+            # -definisco termine di regolarizzazione
+        if regularization_method == "laplacian":
+            # First-order Laplacian smoothing
+            L = np.diag(np.ones(p) / DT_hat.squeeze()).astype("float32")
+            for i in range(L.shape[0] - 1):
+                L[i, i + 1] = -1 / DT_hat[i + 1]
+        elif regularization_method == "none":
+            L = None
+        else:
+            raise ValueError(
+                f"Invalid regularization_method: {regularization_method}. "
+                "Valid options: 'laplacian', 'none'"
+            )
+
+        # -calcolo scaling parameter lambda
+        if isinstance(lambda_scaling, (int, float)):
+            l = float(lambda_scaling)
+        elif lambda_scaling == "auto_std":
+            l = np.mean(deltat) * np.std(comp)
+            logger.debug(f"Auto lambda (std): {l:.4f}")
+        elif lambda_scaling == "auto_mad":
+            l = np.mean(deltat) * 3 * np.median(np.abs(comp - np.median(comp)))
+            logger.debug(f"Auto lambda (MAD): {l:.4f}")
+        else:
+            raise ValueError(
+                f"Invalid lambda_scaling: {lambda_scaling}. "
+                "Valid options: float, 'auto_std', 'auto_mad'"
+            )
+
+        # -calcolo prima iterata
+        X = GLS_solver(comp, A, weight=W0, regularisation=L, l=l)
+        V_hat = X / DT_hat.squeeze()
+
+        # -inizializzo fattore di improvement eps e contatore
+        eps = 1
+        count = 0
+
+        # -loop di iterazione
+        # -se il miglioramento medio è minore di 0.01 o se supero le 10 iterate allora fermo la time series inversion
+        while (eps > 0.01) and (count < iterates):
+            # -aggiorno pesi
+            if count == 0:
+                W = np.copy(W0)
+            Wu, Ru = weight_update(X, comp, A, weight=W, regularisation=L, W0=W0, l=l)
+            # -se ci sono dei pesi a nan li pongo uguali a zero
+            Wu[np.isnan(Wu)] = 0
+            # -ricalcolo risultato
+            Xu = GLS_solver(comp, A, weight=Wu, regularisation=L, l=l)
+            # -calcolo improvement
+            eps = np.mean(abs(X - Xu))
+            X = np.copy(Xu)
+            W = np.copy(Wu)
+            count += 1
+            # V_hat = X/DT_hat.squeeze()*365
+            V_hat = X / DT_hat.squeeze()
+
+        # -popolo output
+        if enum == 0:
+            EW_hat = V_hat
+        elif enum == 1:
+            NS_hat = V_hat
+
+    # -calcolo anche il tempo medio
+    tm = timestamp[:, 0][:, None] + (deltat[:, None] / 2 * 24).astype("timedelta64[h]")
+    timestamp = np.hstack((timestamp, tm))
+    TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
+    Time_hat = np.hstack((Time_hat, TM))
+
+    output = {
+        "EW_hat": EW_hat,
+        "NS_hat": NS_hat,
+        "EW": ew,
+        "NS": ns,
+        "timestamp": timestamp,
+        "deltat": deltat,
+        "DT_hat": DT_hat.squeeze(),
+        "Time_hat": Time_hat,
+    }
+
+    return output
 
 
-def invert_node_old(
+def invert_node_ND(
     ew_series: np.ndarray,
     ns_series: np.ndarray,
     weight_series: np.ndarray,
@@ -498,202 +555,144 @@ def invert_node_old(
     return output
 
 
-def invert_node(
-    ew_series: np.ndarray,
-    ns_series: np.ndarray,
-    timestamp: np.ndarray,
-    node_idx: int,
-    node_x: float,
-    node_y: float,
-    weight_method: Literal[
-        "residuals", "uniform", "Charrier", "variable"
-    ] = "residuals",
-    weight_variable: np.ndarray | None = None,
-    regularization_method: Literal["laplacian", "none"] = "laplacian",
-    lambda_scaling: float | str = 1.0,
-    iterates: int = 10,
-):
+def GLS_solver(y, A, weight=None, regularisation=None, l=1.0):
     """
-    Run time series inversion for a single node.
-
-    Args:
-        ew_series: (n_observations,) array of EW displacement for this node
-        ns_series: (n_observations,) array of NS displacement for this node
-        weight_series: (n_observations,) array of weights for this node
-        timestamp: (n_observations, 2) array of timestamps
-        node_idx: Index of this node
-        node_x: X coordinate of the node
-        node_y: Y coordinate of the node
-        iterates: Maximum number of iterations
-        weight_method: Method for initial weight definition. Options:
-            - "residuals": Based on MAD of residuals (default)
-            - "uniform": Uniform weights
-            - "variable": Use provided weight_variable array
-            - "charrier": Spatial coherence method (requires EW/NS volumes)
-        weight_variable: (n_observations,) array to use as initial weights
-            when weight_method="variable". E.g., ensemble MAD for each timestamp.
-        regularization_method: Method for regularization term. Options:
-            - "laplacian": First-order Laplacian smoothing (default)
-            - "none": No regularization
-        lambda_scaling: Scaling parameter for regularization. Options:
-            - float: Fixed value (default: 1.0)
-            - "auto_std": lambda = mean(deltat) * std(component)
-            - "auto_mad": lambda = mean(deltat) * 3*MAD(component)
-
-    Returns:
-        Dictionary with inversion results or None if data is invalid
+    General least square solver
+    y is the nxn matrix of observation
+    A is the nxp design matrix
+    weight is the nxn weight diagonal matrix
+    regularisation is the pxp regularisation diagonal matrix
+    l is the scaling parameter
     """
+    if weight is None:
+        W = np.diag(np.ones(y.shape))
+    else:
+        W = weight
+    if regularisation is None:
+        X = np.linalg.inv(A.T @ W @ A) @ A.T @ W @ y
+    else:
+        L = regularisation
+        # -calcolo risultato GLS
+        X = np.linalg.inv(A.T @ W @ A + l * (L.T @ L)) @ A.T @ W @ y
+    return X
 
-    # -estraggo spostamento
-    ew = ew_series.squeeze()
-    ns = ns_series.squeeze()
 
-    # -check per nan o -9999
-    nanflag = np.any(np.isnan(ew)) or np.any(np.isnan(ns))
-    ninenineflag = np.any(ew == -9999) or np.any(ns == -9999)
+def hat_matrix_pure(A, W):
+    H = np.diag(A @ np.linalg.inv(A.T @ W @ A) @ A.T @ W)
+    return H
 
-    if nanflag or ninenineflag:
-        logger.debug(
-            f"Node {node_idx} at ({node_x:.1f}, {node_y:.1f}) contains invalid data"
-        )
-        return None
 
-    # -calcolo vettore deltaT
-    deltat = np.abs(np.diff(timestamp, axis=1).astype("float32")).squeeze()
+def hat_matrix(A, W, L, l):
+    H = np.diag(A @ np.linalg.inv(A.T @ W @ A + l * (L.T @ L)) @ A.T @ W)
+    return H
 
-    # -creo vettore dei tempi per le osservazioni
-    Tu = np.sort(np.unique(timestamp))
-    Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
-    for i in range(len(Tu) - 1):
-        Time_hat[i, :] = [Tu[i], Tu[i + 1]]
-    DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
 
-    # -inizializzo matrice di regressione A
-    A = np.zeros((len(ew), Time_hat.shape[0])).astype("float32")
-    for i in range(timestamp.shape[0]):
-        pun = (Time_hat[:, 0] >= timestamp[i, 0]) & (Time_hat[:, 1] <= timestamp[i, 1])
-        A[i, pun] = 1
-
-    # -observations e incognite
+def weight_update(X, y, A, weight=None, regularisation=None, l=1, W0=None):
+    """
+    update weight matrix according to Tukey0s biweight function
+    X is the result matrix
+    y is the nxn matrix of observation
+    A is the nxp design matrix
+    weight is the nxn weight diagonal matrix
+    regularisation is the pxp regularisation diagonal matrix
+    l is the scaling parameter
+    """
+    # -observations
     n = A.shape[0]
+    # -numero incognite
     p = A.shape[1]
+    if weight is None:
+        W = np.diag(np.ones(y.shape))
+    else:
+        W = weight
+    if W0 is None:
+        W0 = np.diag(np.ones(y.shape))
+    if regularisation is None:
+        # H = np.diag(A @ np.linalg.inv(A.T @ W @ A) @ A.T @ W)
+        H = hat_matrix_pure(A, W)
+    else:
+        L = regularisation
+        # leverage da hat matrix
+        H = hat_matrix(A, W, L, l)
+        # H = np.diag(A @ np.linalg.inv(A.T @ W @ A + l*L.T @ L) @ A.T @ W)
+    # -calcolo residui
+    Ru = np.abs((A @ X) - y)
+    # -standard deviation dei residui
+    sigma = (np.sum((Ru**2) / (n - p))) ** 0.5
+    # -studentized residulas
+    Zu = Ru / (sigma * (1 - H) ** 0.5)
+    # -Tukey's biweight funtion
+    const = 4.685  # constant term
+    z = Zu / np.diag(W0 + 0.001)  # add a small value to avoid divide by zeor
+    # -pongo z maggiore di const per i W0 =
+    # z[np.diag(W0)==0] = 5
+    psi = np.zeros(len(z))
+    mask = np.abs(z) < const
+    psi[mask] = (1 - (Zu[mask] / const) ** 2) ** 2
+    # -update weight matrix
+    Wu = np.diag(psi)
+    Wu = Wu * 1 / (np.mean(np.diag(Wu)))
+    return Wu, Ru
 
-    # -calcolo le due componenti
-    EW_hat = np.zeros(len(DT_hat), dtype="float32")
-    NS_hat = np.zeros(len(DT_hat), dtype="float32")
 
-    comps = [ew, ns]
-    comp_names = ["EW", "NS"]
+def weight_definition(
+    ew,  # east-west component
+    ns,  # north-south comnponent
+    method="residuals",  # residuls / uniform / Charrier / variable
+    deltat=None,  # delta tra le osservazioni
+    EW=None,  # east-west voxels
+    NS=None,  # north-south voxels
+    c=None,  # i-j coordinates
+    cc=None,  # variable used as initial weight
+):
+    if method == "uniform":
+        # -Pesi uniformi
+        W0 = np.diag(np.ones(len(ew)))
+    elif method == "Charrier":
+        ii, jj = c[0], c[1]
+        Iew = EW[ii - 1 : ii + 2, jj - 1 : jj + 2, :].squeeze() / deltat.squeeze()
+        Ins = NS[ii - 1 : ii + 2, jj - 1 : jj + 2, :].squeeze() / deltat.squeeze()
+        # -calcolo Zscore delle componenti rispetto
+        tew = np.nanmedian(Iew)
+        tns = np.nanmedian(Ins)
+        Zew = np.abs(ew - tew) / np.median(np.abs(ew - tew))
+        Zns = np.abs(ns - tns) / np.median(np.abs(ns - tns))
+        # -cappo a mad=1
+        mad = 1 / (Zew * Zns + 0.004)
+        mad = mad / np.max(mad)
+        # mad[mad>3] = 3
+        # -calcolo prodotto scalare
+        MA = ((ew + ns * 1j) * np.conj(np.median(Iew + Ins * 1j))) / (
+            np.abs(ew + ns * 1j) * np.abs(np.median(Iew + Ins * 1j))
+        )
+        MA = MA.real  # * 3
+        MA[MA < 0] = 0
+        # -Pesi con prodotto termini di similarità
+        weights = mad * MA
+        W0 = np.diag(weights) / np.sum(weights).astype("float32")
+    elif method == "residuals":
+        # -Pesi basati sui residui
+        y = ew.reshape(-1, 1) / deltat.reshape(-1, 1)
+        # -provo a usarela media invece della mediana --> MOLTO MEGLIO!
+        # mad1 = np.abs(y - np.median(y)) / np.median(np.abs(y-np.median(y)))
+        mad1 = np.abs(y - np.mean(y)) / np.mean(np.abs(y - np.mean(y)))
+        y = ns.reshape(-1, 1) / deltat.reshape(-1, 1)
+        # mad2 = np.abs(y - np.median(y)) / np.median(np.abs(y-np.median(y)))
+        mad2 = np.abs(y - np.mean(y)) / np.mean(np.abs(y - np.mean(y)))
+        epsilon = 10e-4
+        mad = 1 / (mad1 * mad2 + epsilon)
+        # -metto capping a mad=3
+        # mad[mad>3] = 3
+        # -correggo eventuali inf
+        mad[np.isinf(mad)] = np.max(mad[~np.isinf(mad)])
+        W0 = np.diag(mad.squeeze()) / np.mean(mad)
+        # huber = HuberRegressor().fit(deltat.reshape(-1,1), )
+        # Wew = huber.predict(deltat.reshape(-1,1))
+    elif method == "variable":
+        # -Pesi con correlazione
+        W0 = np.diag(cc) / np.mean(cc).astype("float32")
 
-    for enum, (comp, comp_name) in enumerate(zip(comps, comp_names)):
-        # -definisco i pesi iniziali in base al metodo scelto
-        if weight_method == "residuals":
-            W0 = weight_definition(ew, ns, method="residuals", deltat=deltat)
-        elif weight_method == "uniform":
-            W0 = weight_definition(ew, ns, method="uniform")
-        elif weight_method == "variable":
-            if weight_variable is None:
-                raise ValueError(
-                    "weight_variable must be provided when weight_method='variable'"
-                )
-            if len(weight_variable) != len(ew):
-                raise ValueError(
-                    f"weight_variable length {len(weight_variable)} must match "
-                    f"ew_series length {len(ew)}"
-                )
-            W0 = weight_definition(ew, ns, method="variable", cc=weight_variable)
-        elif weight_method == "charrier":
-            # Note: Charrier method requires EW/NS which are not available
-            # in single-node inversion. This would need to be passed as additional args.
-            raise NotImplementedError(
-                "Charrier method requires EW/NS volumes - not available in single-node mode"
-            )
-        else:
-            raise ValueError(
-                f"Invalid weight_method: {weight_method}. "
-                "Valid options: 'residuals', 'uniform', 'variable', 'charrier'"
-            )
-
-            # -definisco termine di regolarizzazione
-        if regularization_method == "laplacian":
-            # First-order Laplacian smoothing
-            L = np.diag(np.ones(p) / DT_hat.squeeze()).astype("float32")
-            for i in range(L.shape[0] - 1):
-                L[i, i + 1] = -1 / DT_hat[i + 1]
-        elif regularization_method == "none":
-            L = None
-        else:
-            raise ValueError(
-                f"Invalid regularization_method: {regularization_method}. "
-                "Valid options: 'laplacian', 'none'"
-            )
-
-        # -calcolo scaling parameter lambda
-        if isinstance(lambda_scaling, (int, float)):
-            l = float(lambda_scaling)
-        elif lambda_scaling == "auto_std":
-            l = np.mean(deltat) * np.std(comp)
-            logger.debug(f"Auto lambda (std): {l:.4f}")
-        elif lambda_scaling == "auto_mad":
-            l = np.mean(deltat) * 3 * np.median(np.abs(comp - np.median(comp)))
-            logger.debug(f"Auto lambda (MAD): {l:.4f}")
-        else:
-            raise ValueError(
-                f"Invalid lambda_scaling: {lambda_scaling}. "
-                "Valid options: float, 'auto_std', 'auto_mad'"
-            )
-
-        # -calcolo prima iterata
-        X = GLS_solver(comp, A, weight=W0, regularisation=L, l=l)
-        V_hat = X / DT_hat.squeeze()
-
-        # -inizializzo fattore di improvement eps e contatore
-        eps = 1
-        count = 0
-
-        # -loop di iterazione
-        # -se il miglioramento medio è minore di 0.01 o se supero le 10 iterate allora fermo la time series inversion
-        while (eps > 0.01) and (count < iterates):
-            # -aggiorno pesi
-            if count == 0:
-                W = np.copy(W0)
-            Wu, Ru = weight_update(X, comp, A, weight=W, regularisation=L, W0=W0, l=l)
-            # -se ci sono dei pesi a nan li pongo uguali a zero
-            Wu[np.isnan(Wu)] = 0
-            # -ricalcolo risultato
-            Xu = GLS_solver(comp, A, weight=Wu, regularisation=L, l=l)
-            # -calcolo improvement
-            eps = np.mean(abs(X - Xu))
-            X = np.copy(Xu)
-            W = np.copy(Wu)
-            count += 1
-            # V_hat = X/DT_hat.squeeze()*365
-            V_hat = X / DT_hat.squeeze()
-
-        # -popolo output
-        if enum == 0:
-            EW_hat = V_hat
-        elif enum == 1:
-            NS_hat = V_hat
-
-    # -calcolo anche il tempo medio
-    tm = timestamp[:, 0][:, None] + (deltat[:, None] / 2 * 24).astype("timedelta64[h]")
-    timestamp = np.hstack((timestamp, tm))
-    TM = Time_hat[:, 0][:, None] + (DT_hat[:, None] / 2 * 24).astype("timedelta64[h]")
-    Time_hat = np.hstack((Time_hat, TM))
-
-    output = {
-        "EW_hat": EW_hat,
-        "NS_hat": NS_hat,
-        "EW": ew,
-        "NS": ns,
-        "timestamp": timestamp,
-        "deltat": deltat,
-        "DT_hat": DT_hat.squeeze(),
-        "Time_hat": Time_hat,
-    }
-
-    return output
+    return W0
 
 
 if __name__ == "__main__":

@@ -1,11 +1,33 @@
 """Data provider interface and factory."""
 
+from __future__ import annotations
+
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
 from ..config import Settings, get_settings
+
+
+def get_data_provider(settings: Settings | None = None) -> DataProvider:
+    """
+    Factory function to get the configured data provider.
+
+    Returns file or database provider based on settings.
+    """
+
+    if settings is None:
+        settings = get_settings()
+
+    if settings.use_database:
+        from .db_loader import DatabaseDataProvider
+
+        return DatabaseDataProvider()
+    else:
+        from .file_loader import FileDataProvider
+
+        return FileDataProvider()
 
 
 @runtime_checkable
@@ -53,22 +75,21 @@ class DataProvider(Protocol):
         """Get reference coordinate array (N, 2) for spatial indexing."""
         ...
 
+    def extract_node_timeseries(
+        self,
+        node_x: float,
+        node_y: float,
+        *,
+        dt_days: int | None = None,
+        group_by_dt: bool = True,
+        delta_days: list[int] | None = None,
+    ) -> dict[int, dict[str, np.ndarray]]:
+        """Extract a node time series across all available slave dates, optionally grouped by dt.
 
-def get_data_provider(settings: Settings | None = None) -> DataProvider:
-    """
-    Factory function to get the configured data provider.
+        Returns a dict mapping group_dt -> timeseries dict with numpy arrays. If group_by_dt is False
+        a single group with key 0 is returned containing all records.
 
-    Returns file or database provider based on settings.
-    """
-
-    if settings is None:
-        settings = get_settings()
-
-    if settings.use_database:
-        from .db_loader import DatabaseDataProvider
-
-        return DatabaseDataProvider()
-    else:
-        from .file_loader import FileDataProvider
-
-        return FileDataProvider()
+        If delta_days is provided it is used as the list of dt bucket centers; each record's dt_days
+        is rounded to the nearest provided delta_days value.
+        """
+        ...

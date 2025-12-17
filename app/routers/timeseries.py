@@ -1,21 +1,21 @@
 import json
-from datetime import datetime
 from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from ..cache import cache
 from ..config import get_logger, get_settings
-from ..services.data_provider import DataProvider, get_data_provider
-from ..services.inversion import invert_node, load_dic_data
-from ..services.plots import make_timeseries_figure
-from ..services.spatial import build_kdtree
+from ..services.data_provider import get_data_provider
+from ..services.plots import add_trace_with_error_band, make_timeseries_figure
 
 logger = get_logger()
 settings = get_settings()
 
 router = APIRouter()
+
+DELTA_DAYS = [1, 3, 5, 10]  # TODO: this is hardcoded here now, move to config
 
 
 @router.get("/timeseries", summary="Get timeseries figure", tags=["timeseries"])
@@ -30,11 +30,13 @@ async def timeseries(
     ymin: float | None = Query(None),
     ymax: float | None = Query(None),
     show_error_band: bool = Query(False),
-    ts_inversion: bool = Query(False),
     dt_days: int | None = Query(None, ge=0, description="Select record by dt_days"),
-    prefer_dt_days: int | None = Query(None, ge=0, description="Pick closest dt_days"),
-    prefer_dt_tolerance: int | None = Query(
-        None, ge=0, description="Tolerance (days) for closest dt"
+    group_by_dt: bool = Query(
+        True, description="Group time series by dt (True = group)"
+    ),
+    delta_days: list[int] | None = Query(
+        DELTA_DAYS,
+        description="Optional list of dt group centers, e.g. ?delta_days=1&delta_days=3",
     ),
 ):
     """Return timeseries figure for a node and optional inversion overlay.
@@ -61,26 +63,43 @@ async def timeseries(
     Raises:
         HTTPException: If no timeseries data is available for the requested node.
     """
-    logger.info("timeseries: node=(%s,%s) inversion=%s", node_x, node_y, ts_inversion)
+    logger.info(f"timeseries: node=({node_x},{node_y})")
+
+    # Fail early if no data loaded
+    if not cache.is_loaded():
+        logger.warning("Nearest requested but no data has been loaded")
+        raise HTTPException(
+            status_code=400,
+            detail="No data loaded yet. Press 'Load' before requesting nearest node.",
+        )
 
     provider = get_data_provider()
-    dates_available = provider.get_available_dates()
 
-    ts = _extract_node_timeseries(
-        dates=dates_available,
+    ts_groups = provider.extract_node_timeseries(
         node_x=node_x,
         node_y=node_y,
-        provider=provider,
         dt_days=dt_days,
-        prefer_dt_days=prefer_dt_days,
-        prefer_dt_tolerance=prefer_dt_tolerance,
+        group_by_dt=group_by_dt,
+        delta_days=delta_days,
     )
-
-    if not ts or not ts.get("dates"):
+    if not ts_groups:
         raise HTTPException(status_code=404, detail="No timeseries data for node")
 
+    # If only a single group is present, use that as the main ts, otherwise prepare to overlay groups
+    group_keys = sorted(ts_groups.keys())
+    main_key = group_keys[0]
+    ts = ts_groups[main_key]
+
+    # Get dates
+    dates = ts.get("reference_dates")
+    if dates is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Timeseries data missing 'reference_dates' field",
+        )
+    dates = [str(d) for d in np.datetime_as_string(dates, unit="D")]
+
     # core plotting inputs
-    dates = [datetime.strptime(d, "%Y-%m-%d") for d in ts["dates"]]
     comp_list = [c.strip() for c in components.split(",") if c.strip()]
 
     if use_velocity:
@@ -94,24 +113,27 @@ async def timeseries(
         V = np.array(ts["disp_mag"])
         y_label = "Displacement (px)"
 
-    V_std = (
-        np.array(ts.get("ensamble_mad"))
-        if show_error_band and ts.get("ensamble_mad")
-        else None
-    )
+    V_std = None
+    if show_error_band:
+        ensamble = ts.get("ensamble_mad", None)
+        if ensamble is not None:
+            arr = np.asarray(ensamble)
+            if arr.size > 0:
+                V_std = arr
 
+    # Build metadata info
     metadata: dict[str, Any] = {
         "Node": f"({node_x:.1f},{node_y:.1f})",
         "N dates": len(dates),
     }
-    if dt_days is not None:
-        metadata["dt (days)"] = int(dt_days)
-    elif prefer_dt_days is not None:
-        metadata["prefer dt (days)"] = int(prefer_dt_days)
+    if len(group_keys) > 1:
+        metadata["dt_days_groups"] = [int(k) for k in group_keys]
 
     if "V" in comp_list:
         metadata["Mean |v|"] = float(np.mean(V))
         metadata["Std |v|"] = float(np.std(V))
+
+    title = f"Time series - Node: ({node_x:.1f}, {node_y:.1f})"
 
     fig = make_timeseries_figure(
         dates=dates,
@@ -123,147 +145,74 @@ async def timeseries(
         V_std=V_std,
         components=comp_list,
         marker_mode=marker_mode,
-        node_coords={"x": node_x, "y": node_y},
         y_label=y_label,
         xmin_date=xmin_date,
         xmax_date=xmax_date,
         ymin=ymin,
         ymax=ymax,
         metadata=metadata,
+        title=title,
     )
 
-    # add simple inversion overlay (magnitude only)
-    if ts_inversion:
-        logger.warning(
-            "Performing time-series inversion works only on local data. Working on db is not implemented yet."
-        )
-        try:
-            tree, coords = build_kdtree(provider)
-            dist, idx = tree.query([node_x, node_y], k=1)
-            if not np.isfinite(dist):
-                raise RuntimeError("node not found in KDTree")
+    # If multiple dt groups present, overlay them (reuse add_trace_with_error_band)
+    if len(group_keys) > 1:
+        palette = ["orange", "green", "purple", "cyan", "magenta", "yellow"]
+        for i, k in enumerate(group_keys[1:], start=0):
+            g = ts_groups[k]
+            dates_i = [
+                str(d) for d in np.datetime_as_string(g["reference_dates"], unit="D")
+            ]
 
-            try:
-                dic = load_dic_data(settings.data_dir)
-            except FileNotFoundError as e:
-                raise RuntimeError(f"load_dic_data error: {e}")
+            # choose color per group (cycle palette)
+            color = palette[i % len(palette)]
 
-            ew_series = dic["ew"][:, idx]
-            ns_series = dic["ns"][:, idx]
-            ens_mad = dic["weight"][:, idx] if "weight" in dic else None
-            timestamp = dic["timestamp"]
+            if use_velocity:
+                u_i = np.asarray(g["u"])
+                v_i = np.asarray(g["v"])
+                V_i = np.asarray(g["V"])
+            else:
+                u_i = np.asarray(g["dx"])
+                v_i = np.asarray(g["dy"])
+                V_i = np.asarray(g["disp_mag"])
 
-            inv = invert_node(
-                ew_series=ew_series,
-                ns_series=ns_series,
-                timestamp=timestamp,
-                node_idx=idx,
-                node_x=coords[idx, 0],
-                node_y=coords[idx, 1],
-                weight_method="variable" if ens_mad is not None else "Charrier",
-                weight_variable=ens_mad,
-                regularization_method="laplacian",
-                lambda_scaling=1.0,
-                iterates=10,
-            )
+            ens_i = None
+            if show_error_band:
+                ens = g.get("ensamble_mad", None)
+                if ens is not None:
+                    arr = np.asarray(ens)
+                    if arr.size > 0:
+                        ens_i = arr
 
-            if inv:
-                ew_hat = inv["EW_hat"]
-                ns_hat = inv["NS_hat"]
-                time_hat = inv["Time_hat"]
-                dates_inv = [np.datetime_as_string(t, unit="D") for t in time_hat[:, 1]]
-                V_inv = np.sqrt(np.array(ew_hat) ** 2 + np.array(ns_hat) ** 2)
-
-                from plotly import graph_objects as go
-
-                fig.add_trace(
-                    go.Scattergl(
-                        x=dates_inv,
-                        y=V_inv,
-                        mode="lines+markers",
-                        name="|v| (Inverted)",
-                        line=dict(color="darkred", width=2),
-                        marker=dict(size=6, symbol="diamond"),
-                    )
+            # Add traces for requested components
+            if "u" in comp_list:
+                add_trace_with_error_band(
+                    fig=fig,
+                    x=dates_i,
+                    y=u_i,
+                    y_std=None,
+                    name=f"u (dt={k}d)",
+                    color=color,
+                    marker_mode=marker_mode,
+                )
+            if "v" in comp_list:
+                add_trace_with_error_band(
+                    fig=fig,
+                    x=dates_i,
+                    y=v_i,
+                    y_std=None,
+                    name=f"v (dt={k}d)",
+                    color=color,
+                    marker_mode=marker_mode,
+                )
+            if "V" in comp_list:
+                add_trace_with_error_band(
+                    fig=fig,
+                    x=dates_i,
+                    y=V_i,
+                    y_std=ens_i,
+                    name=f"|v| (dt={k}d)",
+                    color=color,
+                    marker_mode=marker_mode,
                 )
 
-        except Exception as e:
-            logger.error("Inversion overlay error: %s", e)
-
     return JSONResponse(json.loads(fig.to_json()))
-
-
-def _extract_node_timeseries(
-    *,
-    dates: list[str],
-    node_x: float,
-    node_y: float,
-    provider: DataProvider,
-    dt_days: int | None = None,
-    prefer_dt_days: int | None = None,
-    prefer_dt_tolerance: int | None = None,
-) -> dict[str, list[Any]]:
-    """Extract a node time series across available slave dates.
-
-    Uses a KDTree to find the nearest node index, then for each slave date
-    fetches the selected DIC record via `provider.get_dic_data(...)` and extracts
-    the values at that index.
-
-    Args:
-        dates: Available slave dates as `YYYYMMDD`.
-        node_x: Query x coordinate.
-        node_y: Query y coordinate.
-        provider: Active data provider (file or database).
-        dt_days: Optional exact dt (days) selection per slave date.
-        prefer_dt_days: Optional preferred dt (days) selection per slave date.
-        prefer_dt_tolerance: Optional tolerance (days) for closest dt.
-
-    Returns:
-        A dict of lists with keys:
-          `dates, dx, dy, disp_mag, u, v, V, ensamble_mad`.
-        Returns an empty dict if no data is available.
-    """
-    if not dates:
-        return {}
-
-    # Build KDTree to find nearest node index (coordinate set is shared across records)
-    tree, _coords = build_kdtree(provider)
-    dist, idx = tree.query([node_x, node_y], k=1)
-
-    if not np.isfinite(dist):
-        logger.warning("Node (%s, %s) not found in KDTree", node_x, node_y)
-        return {}
-
-    ts: dict[str, list[Any]] = {
-        "dates": [],
-        "dx": [],
-        "dy": [],
-        "disp_mag": [],
-        "u": [],
-        "v": [],
-        "V": [],
-        "ensamble_mad": [],
-    }
-
-    for date_str in sorted(dates):
-        data = provider.get_dic_data(
-            date_str,
-            dt_days=dt_days,
-            prefer_dt_days=prefer_dt_days,
-            prefer_dt_tolerance=prefer_dt_tolerance,
-        )
-        if not data:
-            continue
-
-        ts["dates"].append(date_str)
-        ts["dx"].append(float(data["dx"][idx]))
-        ts["dy"].append(float(data["dy"][idx]))
-        ts["disp_mag"].append(float(data["disp_mag"][idx]))
-        ts["u"].append(float(data["u"][idx]))
-        ts["v"].append(float(data["v"][idx]))
-        ts["V"].append(float(data["V"][idx]))
-
-        em = data.get("ensamble_mad")
-        ts["ensamble_mad"].append(float(em[idx]) if em is not None else 0.0)
-
-    return ts

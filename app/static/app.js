@@ -240,12 +240,25 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
 
   const resN = await fetch(urlNearest.toString());
   if (!resN.ok) {
-    alert("No node within radius");
+    // Try to parse server JSON error (HTTPException -> { detail: "..." })
+    let msg;
+    try {
+      const body = await resN.json();
+      msg = body.detail || body.message || JSON.stringify(body);
+    } catch {
+      // Fallback to plain text or status text
+      msg = await resN.text().catch(() => resN.statusText || `status ${resN.status}`);
+    }  
+    console.warn("Nearest API error:", resN.status, msg);
+    alert(`Nearest node error (${resN.status}): ${msg}`);
     return;
   }
 
   const node = await resN.json();
   window.selectedNode = { x: node.x, y: node.y };
+
+  // enable inversion button now that a node is selected
+  updateInversionButton();
 
   // refresh map to draw selected marker
   await fetchVelocityMap();
@@ -307,6 +320,7 @@ async function fetchTimeseriesAt(x, y, runInversion = false) {
 }
 
 async function runTSInversion() {
+  console.info("runTSInversion called");
   if (!window.selectedNode) {
     alert("Please select a node first by clicking on the velocity map");
     return;
@@ -319,7 +333,89 @@ async function runTSInversion() {
   }
 
   try {
-    await fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y, true);
+    // Read inversion controls from the GUI
+    const weight_method = valueOf("inv-weight-method", "residuals");
+    const regularization_method = valueOf("inv-regularization-method", "laplacian");
+    const lambda_scaling = toNumberOrNull(valueOf("inv-lambda-scaling", "1.0")) ?? 1.0;
+    const iterates = parseInt(valueOf("inv-iterates", "10"), 10) || 10;
+    const refresh_plot = checkedOf("inv-refresh-plot", false);
+
+    // Ensure a time-series plot exists (fetch if missing)
+    const lowerDiv = el("lower");
+    const hasPlot = !!(lowerDiv && lowerDiv.data && lowerDiv.data.length > 0);
+    if (!hasPlot) {
+      console.debug("No timeseries plot found — fetching it before inversion");
+      await fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+    }
+
+    // If requested, refresh the timeseries plot (call timeseries endpoint to get a fresh base)
+    if (refresh_plot) {
+      console.debug("Refreshing timeseries plot before inversion (refresh_plot=true)");
+      await fetchTimeseriesAt(window.selectedNode.x, window.selectedNode.y);
+    }
+
+    // Build request body: node coords
+    const body = {
+      node_x: window.selectedNode.x,
+      node_y: window.selectedNode.y,
+      iterates: iterates,
+      regularization_method: regularization_method,
+      lambda_scaling: lambda_scaling,
+      weight_method: weight_method,
+    };
+    console.debug("Running inversion with params:", body);
+    const res = await fetch("/api/inversion/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      let msg = await (async () => {
+        try {
+          const body = await res.json();
+          return body.detail || body.message || JSON.stringify(body);
+        } catch {
+          return await res.text().catch(() => res.statusText || `status ${res.status}`);
+        }
+      })();
+      console.error("Inversion failed:", msg);
+      alert("Inversion failed: " + msg);
+      return;
+    }
+
+    const payload = await res.json();
+    const inv = payload.node_inversion;
+    console.debug("Inversion result", inv);
+
+    if (!inv || !inv.dates || !inv.V_hat) {
+      alert("No inversion result returned");
+      return;
+    }
+
+    // Decide overlay color: when we refreshed the base plot use 'darkred' (high-contrast),
+    // otherwise use 'orange' to distinguish from existing traces.
+    const overlayColor = refresh_plot ? "darkred" : "orange";
+
+    // Add overlay trace (magnitude) to existing timeseries plot
+    const trace = {
+      x: inv.dates,
+      y: inv.V_hat,
+      mode: "lines+markers",
+      name: "|v| (Inverted)",
+      line: { color: overlayColor, width: 2 },
+      marker: { size: 6, symbol: "diamond" },
+    };
+
+    if (typeof Plotly !== "undefined") {
+      // If plot exists, add traces; otherwise render fresh with a single trace
+      const lowerDiv = el("lower");
+      if (lowerDiv && lowerDiv.data && lowerDiv.data.length > 0) {
+        await Plotly.addTraces("lower", trace);
+      } else {
+        await Plotly.newPlot("lower", [trace]);
+      }
+    }
   } catch (err) {
     console.error("Error running TS inversion:", err);
     alert("Error running TS inversion. Check console for details.");
@@ -330,6 +426,7 @@ async function runTSInversion() {
     }
   }
 }
+
 // -----------------------------------------------------------------------------
 // Initialization / event wiring
 // -----------------------------------------------------------------------------
@@ -390,9 +487,16 @@ function initialPlot() {
   // The main date picker (in the template) triggers fetchVelocityMap()
   // when the user selects a date.
 }
-// ...existing code...
+
+function updateInversionButton() {
+  const btn = el("ts-inversion");
+  if (!btn) return;
+  btn.disabled = !window.selectedNode;
+}
+
 // Single entry point
 document.addEventListener("DOMContentLoaded", () => {
   syncDtControls();
   wireControls();
+  updateInversionButton(); // ensure initial disabled state
 });

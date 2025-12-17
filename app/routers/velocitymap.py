@@ -107,6 +107,15 @@ async def velocity_map(
     selected_y: float | None = Query(None),
 ):
     """Create map for a given date."""
+
+    # Fail early if no data loaded
+    if not cache.is_loaded():
+        logger.warning("Nearest requested but no data has been loaded")
+        raise HTTPException(
+            status_code=400,
+            detail="No data loaded yet. Press 'Load' before requesting nearest node.",
+        )
+
     logger.info(f"map: date={reference_date} use_velocity={use_velocity}")
 
     # Get data provider

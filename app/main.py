@@ -8,16 +8,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .cache import AppState, cache
-from .config import get_logger, get_settings
+from .config import get_logger, get_settings, reload_settings
 from .routers import router as api_router
 from .services import get_data_provider
 
 logger = get_logger()
-settings = get_settings()
 app_state = AppState()
 
-# Global provider variable initialized in lifespan()
+# Global variables initialized in lifespan()
+settings = None
 provider = None  # type: ignore
+available_dates = []  # type: ignore
+startup_error: str | None = None
+
 
 # Jinja2 templates
 templates = Jinja2Templates(directory="app/templates")
@@ -26,11 +29,24 @@ templates = Jinja2Templates(directory="app/templates")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: do NOT preload data at startup (lazy loading)."""
-    global provider
+    global settings, provider, available_dates, startup_error
     logger.info("Starting application - initializing provider (lazy loading enabled)")
+    # Load settings (or reload if they are already present)
+    settings = get_settings() if settings is None else reload_settings()
+    logger.info("Settings loaded")
+
     try:
         provider = get_data_provider()
+        if provider is None:
+            raise RuntimeError("No valid data provider could be initialized")
         logger.info(f"Using data provider: {provider.__class__.__name__}")
+
+        available_dates = provider.get_available_dates()
+        if not available_dates:
+            raise RuntimeError(
+                "No available dates found in data provider. Check data source or configuration file."
+            )
+        logger.debug(f"Available dates: {available_dates}")
 
         # Default behavior: do not load any data until user presses "Load"
         logger.debug("Skipping preload at startup; waiting for user-triggered load")
@@ -39,8 +55,12 @@ async def lifespan(app: FastAPI):
         logger.info("Application ready")
 
     except Exception as e:
-        logger.error(f"Failed during startup initialization: {e}", exc_info=True)
-        raise
+        # record a short, safe message for the frontend and keep process running
+        startup_error = f"{type(e).__name__}: {e}"
+        logger.error(
+            "Failed during startup initialization: %s", startup_error, exc_info=True
+        )
+        # Do not re-raise so the server can start and the frontend can show the error
 
     yield
 
@@ -63,32 +83,32 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 app.include_router(api_router, prefix="/api")
 
 
-# Serve HTML UI if enabled in settings
-if settings.serve_ui:
-
-    @app.get("/", response_class=HTMLResponse)
-    async def root(request: Request):
-        if not app_state.is_ready():
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    if not app_state.is_ready():
+        # show startup error if present, otherwise generic starting message
+        if startup_error:
             return HTMLResponse(
-                "<h1>Service starting up, please wait...</h1>", status_code=503
+                f"<h1>Startup error</h1><pre>{startup_error}</pre>",
+                status_code=500,
             )
 
-        # Always show *available* dates for the LOAD pickers (lazy, no data load)
-        available_dates = provider.get_available_dates() if provider is not None else []
-
-        # Show *loaded* dates for the main navigation/plots (depends on cache)
-        loaded_dates = cache.get_available_dates() if cache.is_loaded() else []
-
-        return templates.TemplateResponse(
-            "index.html",
-            {
-                "request": request,
-                "available_dates_iso": available_dates,
-                "loaded_dates_iso": loaded_dates,
-                "use_database": settings.use_database,
-                "background_image": settings.background_image,
-            },
+        return HTMLResponse(
+            "<h1>Service starting up, please wait...</h1>", status_code=503
         )
+    # Show *loaded* dates for the main navigation/plots (depends on cache)
+    loaded_dates = cache.get_available_dates() if cache.is_loaded() else []
+
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "available_dates_iso": available_dates,
+            "loaded_dates_iso": loaded_dates,
+            "use_database": settings.use_database,
+            "background_image": settings.background_image,
+        },
+    )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ Design:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -88,6 +88,21 @@ class DataCache:
     def __repr__(self) -> str:
         """Return a short representation useful for logs/debug."""
         return f"<DataCache records={self.num_records}>"
+
+    def __iter__(self) -> Iterator[tuple[DicMeta, dict[str, Any]]]:
+        """Yield all cached records as (meta, payload) tuples.
+
+        Iterates in ascending record_id order and yields only complete entries
+        (both meta and payload present). This ensures every valid cached record
+        is produced for callers iterating over the cache.
+        """
+        for record_id in sorted(self.dic_records.keys()):
+            payload = self.dic_records.get(record_id)
+            meta = self.dic_meta.get(record_id)
+            if meta is None or payload is None:
+                # Skip incomplete entries (defensive)
+                continue
+            yield (meta, payload)
 
     @property
     def num_records(self) -> int:

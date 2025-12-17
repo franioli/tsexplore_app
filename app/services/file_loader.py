@@ -11,17 +11,21 @@ Key points
   - prefer_dt_days (closest), otherwise defaults to smallest dt_days.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from tqdm import tqdm
 
-from ..cache import cache
+from ..cache import DataCache
+from ..cache import cache as global_cache
 from ..config import get_settings
 from .data_provider import DataProvider
 
@@ -31,17 +35,21 @@ logger = logging.getLogger(__name__)
 class FileDataProvider(DataProvider):
     """Load DIC data from text files on disk."""
 
-    def __init__(self):
+    def __init__(self, cache: DataCache | None = None):
         """Initialize the file-backed provider."""
+
         self.settings = get_settings()
+
+        # allow cache injection; default to module-level global cache for backwards compat
+        self._cache = cache if cache is not None else global_cache
 
         # caches for get_available_dates()
         self._available_dates_cache: list[str] | None = None
         self._available_dates_sig: tuple[str, str, str | None] | None = None
 
-        # Cache for data
-        self._loaded = False
-        self._data_cache = None
+    def bind_cache(self, cache: DataCache):
+        """Optional helper to set/replace the cache after construction."""
+        self._cache = cache
 
     def get_available_dates(self) -> list[str]:
         """Return all available reference dates (YYYY-MM-DD) without loading DIC arrays.
@@ -96,18 +104,18 @@ class FileDataProvider(DataProvider):
         Args:
             reference_date: Reference date in YYYY-MM-DD (final image date).
             dt_days: If provided, select the record with this time interval (days).
-            initial_date: If provided, select by initial date (YYYY-MM-DD). Can be combined
-                with dt_days for an exact match.
+            initial_date: If provided, select by initial date (YYYY-MM-DD). Can be combined with dt_days for an exact match.
             prefer_dt_days: If provided, pick the record whose dt_days is closest.
             prefer_dt_tolerance: Optional tolerance (days) for closest match.
 
         Returns:
             The payload dict for the selected record, or None if no matching record exists.
         """
-        if not cache.is_loaded():
+        if not self._cache.is_loaded():
             raise ValueError(
                 "No data loaded yet. Press 'Load' before requesting DIC data."
             )
+
         # Convert reference_date to YYYYMMDD for cache lookup
         if "-" in reference_date:
             reference_date = datetime.strptime(reference_date, "%Y-%m-%d").strftime(
@@ -118,7 +126,7 @@ class FileDataProvider(DataProvider):
                 "%Y%m%d"
             )
 
-        rid = cache.find_record_id(
+        rid = self._cache.find_record_id(
             reference_yyyymmdd=reference_date,
             initial_yyyymmdd=initial_date,
             dt_days=dt_days,
@@ -128,7 +136,7 @@ class FileDataProvider(DataProvider):
         if rid is None:
             return None
 
-        rec = cache.get_dic_record(rid)
+        rec = self._cache.get_dic_record(rid)
         if rec is None:
             return None
         _meta, payload = rec
@@ -140,9 +148,8 @@ class FileDataProvider(DataProvider):
         Returns:
             The number of loaded records (one record per file).
         """
-        if cache.is_loaded():
-            self._loaded = True
-            return cache.num_records
+        if self._cache.is_loaded():
+            return self._cache.num_records
 
         s = self.settings
         n = _load_data_to_cache(
@@ -153,6 +160,7 @@ class FileDataProvider(DataProvider):
             date_format=getattr(s, "date_format", None),
             invert_y=s.invert_y,
             dt_days_preferred=getattr(s, "dt_days_preferred", None),
+            cache=self._cache,
         )
         self._loaded = True
         return n
@@ -168,10 +176,8 @@ class FileDataProvider(DataProvider):
         Dates are expected as 'YYYY-MM-DD' (from UI).
         """
         s = self.settings
-
         dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
         dt_end = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
-
         n = _load_data_to_cache(
             data_dir=s.data_dir,
             file_search_pattern=s.file_search_pattern,
@@ -181,8 +187,8 @@ class FileDataProvider(DataProvider):
             reference_date_end=dt_end,
             invert_y=s.invert_y,
             progress_callback=progress_callback,
+            cache=self._cache,
         )
-        self._loaded = True
         return n
 
     def get_coordinates(self) -> np.ndarray:
@@ -194,20 +200,133 @@ class FileDataProvider(DataProvider):
         Raises:
             ValueError: If no data is available.
         """
-        if not cache.is_loaded():
+        if not self._cache.is_loaded():
             self.load_all()
 
-        if cache.num_records == 0:
+        if self._cache.num_records == 0:
             raise ValueError("No data available")
 
         # Pick the first record_id deterministically
-        first_id = sorted(cache.dic_records.keys())[0]
-        rec = cache.get_dic_record(first_id)
+        first_id = sorted(self._cache.dic_records.keys())[0]
+        rec = self._cache.get_dic_record(first_id)
         if rec is None:
             raise ValueError("No data available")
 
         _meta, payload = rec
         return np.column_stack([payload["x"], payload["y"]])
+
+    def extract_node_timeseries(
+        self,
+        node_x: float,
+        node_y: float,
+        *,
+        dt_days: int | None = None,
+        group_by_dt: bool = True,
+        delta_days: list[int] | None = None,
+    ) -> dict[int, dict[str, np.ndarray]]:
+        """Extract a node time series across all available slave dates, optionally grouped by dt.
+
+        Returns a dict mapping group_dt -> timeseries dict with numpy arrays. If group_by_dt is False
+        a single group with key 0 is returned containing all records.
+
+        If delta_days is provided it is used as the list of dt bucket centers; each record's dt_days
+        is rounded to the nearest provided delta_days value.
+        """
+        if not self._cache.is_loaded():
+            raise ValueError(
+                "No data loaded yet. Press 'Load' before requesting timeseries."
+            )
+        if self._cache.kdtree is None:
+            raise ValueError(
+                "No kdtree is available in data cache. Try reloading the data."
+            )
+
+        # Find nearest node to the selected coordinates
+        tree, _ = self._cache.kdtree
+        dist, idx = tree.query([node_x, node_y], k=1)
+        if not np.isfinite(dist):
+            logger.warning("Node (%s, %s) not found in KDTree", node_x, node_y)
+            return {}
+
+        # Build groups: key -> lists
+        groups: dict[int, dict[str, list[Any]]] = {}
+
+        def _add_to_group(gkey: int, meta, record):
+            g = groups.setdefault(
+                gkey,
+                {
+                    "reference_dates": [],
+                    "initial_dates": [],
+                    "final_dates": [],
+                    "dt_days": [],
+                    "dx": [],
+                    "dy": [],
+                    "disp_mag": [],
+                    "u": [],
+                    "v": [],
+                    "V": [],
+                    "ensamble_mad": [],
+                },
+            )
+            g["reference_dates"].append(meta.final_date)
+            g["initial_dates"].append(meta.initial_date)
+            g["final_dates"].append(meta.final_date)
+            # get integer dt_days if available else compute
+            rec_dt = int(record.get("dt_days"))
+            g["dt_days"].append(rec_dt)
+            g["dx"].append(record["dx"][idx])
+            g["dy"].append(record["dy"][idx])
+            g["disp_mag"].append(record["disp_mag"][idx])
+            g["u"].append(record["u"][idx])
+            g["v"].append(record["v"][idx])
+            g["V"].append(record["V"][idx])
+            g["ensamble_mad"].append(
+                record["ensamble_mad"][idx] if "ensamble_mad" in record else None
+            )
+
+        # Iterate over all records in the cache (sorted by record_id)
+        for meta, record in self._cache:
+            # If caller requested a specific dt_days filter, skip non-matching records
+            rec_dt_days = (meta.final_date - meta.initial_date).days
+            if dt_days is not None and rec_dt_days != int(dt_days):
+                continue
+
+            if not group_by_dt:
+                grp_key = 0
+            else:
+                if delta_days:
+                    # round to closest provided delta_days value
+                    closest = min(delta_days, key=lambda d: abs(d - rec_dt_days))
+                    grp_key = int(closest)
+                else:
+                    # group by exact dt_days value
+                    grp_key = int(rec_dt_days)
+
+            _add_to_group(grp_key, meta, record)
+
+        # Convert lists to numpy arrays for each group
+        out: dict[int, dict[str, np.ndarray]] = {}
+        for gkey, g in groups.items():
+            out[gkey] = {
+                "reference_dates": np.asarray(
+                    g["reference_dates"], dtype="datetime64[D]"
+                ),
+                "initial_dates": np.asarray(g["initial_dates"], dtype="datetime64[D]"),
+                "final_dates": np.asarray(g["final_dates"], dtype="datetime64[D]"),
+                "dt_days": np.asarray(g["dt_days"], dtype=np.int32),
+                "dx": np.asarray(g["dx"], dtype=np.float32),
+                "dy": np.asarray(g["dy"], dtype=np.float32),
+                "disp_mag": np.asarray(g["disp_mag"], dtype=np.float32),
+                "u": np.asarray(g["u"], dtype=np.float32),
+                "v": np.asarray(g["v"], dtype=np.float32),
+                "V": np.asarray(g["V"], dtype=np.float32),
+                "ensamble_mad": np.asarray(
+                    [v if v is not None else np.nan for v in g["ensamble_mad"]],
+                    dtype=np.float32,
+                ),
+            }
+
+        return out
 
 
 @lru_cache(maxsize=64)
@@ -484,6 +603,7 @@ def _load_data_to_cache(
     dt_days_tolerance: int = 1,
     reference_date_start: datetime | None = None,
     reference_date_end: datetime | None = None,
+    cache: DataCache = global_cache,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> int:
     """Load all DIC files from disk into the global cache (one record per file).

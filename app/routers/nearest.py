@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
+from ..cache import cache
 from ..config import get_logger, get_settings
 from ..models.types import NearestNodeResponse
 from ..services.spatial import nearest_node as find_nearest_node
@@ -24,6 +25,15 @@ async def api_nearest(
     radius: float = Query(10.0, ge=0, le=1000),
 ):
     """Find nearest node."""
+
+    # Fail early if no data loaded
+    if not cache.is_loaded():
+        logger.warning("Nearest requested but no data has been loaded")
+        raise HTTPException(
+            status_code=400,
+            detail="No data loaded yet. Press 'Load' before requesting nearest node.",
+        )
+
     logger.info(
         f"API /nearest - reference_date={reference_date}, x={x}, y={y}, radius={radius}"
     )

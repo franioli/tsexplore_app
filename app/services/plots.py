@@ -319,11 +319,11 @@ def make_timeseries_figure(
     components: Sequence[str] | None = None,
     marker_mode: Literal["lines+markers", "lines", "markers"] = "lines+markers",
     y_label: str = "Value",
-    node_coords: dict[str, float] | None = None,
     xmin_date: str | None = None,
     xmax_date: str | None = None,
     ymin: float | None = None,
     ymax: float | None = None,
+    title: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> go.Figure:
     """
@@ -425,7 +425,7 @@ def make_timeseries_figure(
 
     # Add traces for selected components with error bands
     if "u" in components:
-        _add_trace_with_error_band(
+        add_trace_with_error_band(
             fig=fig,
             x=dates,
             y=u,
@@ -436,7 +436,7 @@ def make_timeseries_figure(
         )
 
     if "v" in components:
-        _add_trace_with_error_band(
+        add_trace_with_error_band(
             fig=fig,
             x=dates,
             y=v,
@@ -447,7 +447,7 @@ def make_timeseries_figure(
         )
 
     if "V" in components:
-        _add_trace_with_error_band(
+        add_trace_with_error_band(
             fig=fig,
             x=dates,
             y=V,
@@ -458,9 +458,8 @@ def make_timeseries_figure(
         )
 
     # Build title
-    title = "Time Series"
-    if node_coords:
-        title += f" - Node: ({node_coords['x']:.1f}, {node_coords['y']:.1f})"
+    if title is None:
+        title = "Time Series"
 
     # Apply axis limits
     x_range = [xmin_date, xmax_date] if xmin_date and xmax_date else None
@@ -475,7 +474,7 @@ def make_timeseries_figure(
         dragmode="zoom",
         template="plotly_white",
         margin=dict(l=50, r=20, t=50, b=50),
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right"),
+        legend=dict(orientation="h", y=1.02, x=1, xanchor="left"),
         hovermode="x unified",
     )
 
@@ -504,7 +503,7 @@ def make_timeseries_figure(
     return fig
 
 
-def _add_trace_with_error_band(
+def add_trace_with_error_band(
     fig: go.Figure,
     x: list[datetime],
     y: np.ndarray,

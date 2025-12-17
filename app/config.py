@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 from pathlib import Path
@@ -8,7 +10,25 @@ from pydantic_settings.sources import (
     YamlConfigSettingsSource,
 )
 
+###=== SETTINGS SETUP ===###
 CFG_PATH = Path(os.getenv("CONFIG_FILE", "config.yaml"))
+
+
+# module-level cached instance (lazy)
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
+
+
+def reload_settings() -> Settings:
+    global _settings
+    _settings = Settings()
+    return _settings
 
 
 class Settings(BaseSettings):
@@ -103,21 +123,7 @@ class Settings(BaseSettings):
         )
 
 
-# module-level cached instance (lazy)
-_settings: Settings | None = None
-
-
-def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
-        _settings = Settings()
-    return _settings
-
-
-def reload_settings() -> Settings:
-    global _settings
-    _settings = Settings()
-    return _settings
+###=== LOGGING SETUP ===###
 
 
 def setup_logger() -> logging.Logger:
