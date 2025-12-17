@@ -307,23 +307,34 @@ class FileDataProvider(DataProvider):
         # Convert lists to numpy arrays for each group
         out: dict[int, dict[str, np.ndarray]] = {}
         for gkey, g in groups.items():
+            # convert reference dates to numpy datetimes and compute sort order
+            ref_dates = np.asarray(g["reference_dates"], dtype="datetime64[D]")
+            if ref_dates.size == 0:
+                # empty group -> skip
+                continue
+
+            # Get order index to sort data
+            order = np.argsort(ref_dates)
+
+            reference_dates = np.asarray(g["reference_dates"], dtype="datetime64[D]")
+            initial_dates = np.asarray(g["initial_dates"], dtype="datetime64[D]")
+            final_dates = np.asarray(g["final_dates"], dtype="datetime64[D]")
+
             out[gkey] = {
-                "reference_dates": np.asarray(
-                    g["reference_dates"], dtype="datetime64[D]"
-                ),
-                "initial_dates": np.asarray(g["initial_dates"], dtype="datetime64[D]"),
-                "final_dates": np.asarray(g["final_dates"], dtype="datetime64[D]"),
-                "dt_days": np.asarray(g["dt_days"], dtype=np.int32),
-                "dx": np.asarray(g["dx"], dtype=np.float32),
-                "dy": np.asarray(g["dy"], dtype=np.float32),
-                "disp_mag": np.asarray(g["disp_mag"], dtype=np.float32),
-                "u": np.asarray(g["u"], dtype=np.float32),
-                "v": np.asarray(g["v"], dtype=np.float32),
-                "V": np.asarray(g["V"], dtype=np.float32),
+                "reference_dates": reference_dates[order],
+                "initial_dates": initial_dates[order],
+                "final_dates": final_dates[order],
+                "dt_days": np.asarray(g["dt_days"], dtype=np.int32)[order],
+                "dx": np.asarray(g["dx"], dtype=np.float32)[order],
+                "dy": np.asarray(g["dy"], dtype=np.float32)[order],
+                "disp_mag": np.asarray(g["disp_mag"], dtype=np.float32)[order],
+                "u": np.asarray(g["u"], dtype=np.float32)[order],
+                "v": np.asarray(g["v"], dtype=np.float32)[order],
+                "V": np.asarray(g["V"], dtype=np.float32)[order],
                 "ensemble_mad": np.asarray(
                     [v if v is not None else np.nan for v in g["ensemble_mad"]],
                     dtype=np.float32,
-                ),
+                )[order],
             }
 
         return out
