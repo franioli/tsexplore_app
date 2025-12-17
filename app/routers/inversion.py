@@ -79,11 +79,15 @@ async def run_node_inversion(
         #     (timestamp[:, 0] - timestamp[:, 1]).astype("timedelta64[D]").astype(float)
         # ).astype("float32")
 
-        # optional per-observation ensemble MAD weights
-        ens_mad = main_group.get("ensamble_mad", None)
-        weight_var = (
-            np.asarray(ens_mad, dtype=np.float32) if ens_mad is not None else None
-        )
+        # Per-observation ensemble MAD weights ot use if weight_method is set to 'variable'
+        ens_mad = main_group.get("ensemble_mad", None)
+        if ens_mad is None or len(ens_mad) != n_obs or not np.all(np.isfinite(ens_mad)):
+            logger.warning(
+                "Ensemble MAD array is missing or inconsistent in timeseries data. Fallback to 'residuals' for initial weights"
+            )
+            weight_var = None
+        else:
+            weight_var = np.asarray(ens_mad, dtype=np.float32)
 
         logger.info("Data prepared (%d observations). Running inversion...", n_obs)
         res = invert_node(

@@ -265,7 +265,7 @@ class FileDataProvider(DataProvider):
                     "u": [],
                     "v": [],
                     "V": [],
-                    "ensamble_mad": [],
+                    "ensemble_mad": [],
                 },
             )
             g["reference_dates"].append(meta.final_date)
@@ -280,8 +280,8 @@ class FileDataProvider(DataProvider):
             g["u"].append(record["u"][idx])
             g["v"].append(record["v"][idx])
             g["V"].append(record["V"][idx])
-            g["ensamble_mad"].append(
-                record["ensamble_mad"][idx] if "ensamble_mad" in record else None
+            g["ensemble_mad"].append(
+                record["ensemble_mad"][idx] if "ensemble_mad" in record else None
             )
 
         # Iterate over all records in the cache (sorted by record_id)
@@ -320,8 +320,8 @@ class FileDataProvider(DataProvider):
                 "u": np.asarray(g["u"], dtype=np.float32),
                 "v": np.asarray(g["v"], dtype=np.float32),
                 "V": np.asarray(g["V"], dtype=np.float32),
-                "ensamble_mad": np.asarray(
-                    [v if v is not None else np.nan for v in g["ensamble_mad"]],
+                "ensemble_mad": np.asarray(
+                    [v if v is not None else np.nan for v in g["ensemble_mad"]],
                     dtype=np.float32,
                 ),
             }
@@ -451,7 +451,7 @@ def _read_txt(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
 
     Returns:
         A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
-        ``ensamble_mad``.
+        ``ensemble_mad``.
 
     Raises:
         ValueError: If the file is empty.
@@ -476,7 +476,7 @@ def _read_txt(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
         dy = -dy
 
     magnitude = np.hypot(dx, dy)
-    ensamble_mad = data[:, 4] if data.shape[1] > 4 else np.zeros_like(magnitude)
+    ensemble_mad = data[:, 4] if data.shape[1] > 4 else np.zeros_like(magnitude)
 
     return {
         "x": x,
@@ -484,7 +484,7 @@ def _read_txt(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
         "dx": dx,
         "dy": dy,
         "magnitude": magnitude,
-        "ensamble_mad": ensamble_mad,
+        "ensemble_mad": ensemble_mad,
     }
 
 
@@ -531,18 +531,18 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
 
         # prefer explicit 'mad' or fall back to 'corr' or zeros
         if "mad" in g:
-            ensamble_mad = _read_ds("mad", dtype=np.float32, shape=(n_nodes,))
+            ensemble_mad = _read_ds("mad", dtype=np.float32, shape=(n_nodes,))
         elif "corr" in g:
-            ensamble_mad = _read_ds("corr", dtype=np.float32, shape=(n_nodes,))
+            ensemble_mad = _read_ds("corr", dtype=np.float32, shape=(n_nodes,))
         else:
-            ensamble_mad = np.zeros_like(dx)
+            ensemble_mad = np.zeros_like(dx)
 
         # ensure 1-D and length-consistent
         x = np.asarray(x, dtype=np.float32).ravel()[:n_nodes]
         y = np.asarray(y, dtype=np.float32).ravel()[:n_nodes]
         dx = np.asarray(dx, dtype=np.float32).ravel()[:n_nodes]
         dy = np.asarray(dy, dtype=np.float32).ravel()[:n_nodes]
-        ensamble_mad = np.asarray(ensamble_mad, dtype=np.float32).ravel()[:n_nodes]
+        ensemble_mad = np.asarray(ensemble_mad, dtype=np.float32).ravel()[:n_nodes]
 
         if invert_y:
             y = -y
@@ -556,7 +556,7 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
         "dx": dx,
         "dy": dy,
         "magnitude": magnitude,
-        "ensamble_mad": ensamble_mad,
+        "ensemble_mad": ensemble_mad,
     }
 
 
@@ -569,7 +569,7 @@ def _read_dic_file(file_path: Path, *, invert_y: bool) -> dict[str, np.ndarray]:
 
     Returns:
         A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
-        ``ensamble_mad``.
+        ``ensemble_mad``.
 
     Raises:
         FileNotFoundError: If the file does not exist.
@@ -702,7 +702,7 @@ def _load_data_to_cache(
                 "u": u_vel,
                 "v": v_vel,
                 "V": V_vel,
-                "ensamble_mad": dic_data["ensamble_mad"],
+                "ensemble_mad": dic_data["ensemble_mad"],
                 "dt_hours": dt_hours,
                 "dt_days": dt_days,
                 # keep dates in payload too (handy for API responses/metadata)

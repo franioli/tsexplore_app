@@ -115,9 +115,9 @@ async def timeseries(
 
     V_std = None
     if show_error_band:
-        ensamble = ts.get("ensamble_mad", None)
-        if ensamble is not None:
-            arr = np.asarray(ensamble)
+        ensemble = ts.get("ensemble_mad", None)
+        if ensemble is not None:
+            arr = np.asarray(ensemble)
             if arr.size > 0:
                 V_std = arr
 
@@ -177,7 +177,7 @@ async def timeseries(
 
             ens_i = None
             if show_error_band:
-                ens = g.get("ensamble_mad", None)
+                ens = g.get("ensemble_mad", None)
                 if ens is not None:
                     arr = np.asarray(ens)
                     if arr.size > 0:

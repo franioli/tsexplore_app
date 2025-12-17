@@ -191,7 +191,7 @@ class DatabaseDataProvider(DataProvider):
           "u": np.ndarray,   # velocity EW (px/day)
           "v": np.ndarray,   # velocity NS (px/day)
           "V": np.ndarray,   # velocity magnitude (px/day)
-          "ensamble_mad": np.ndarray,
+          "ensemble_mad": np.ndarray,
           "dt_hours": int,
           "dt_days": int,
         }
@@ -288,8 +288,8 @@ class DatabaseDataProvider(DataProvider):
             v_vel = dy
             V_vel = disp_mag
 
-        ensamble_mad = np.array(
-            payload.get("ensamble_mad")
+        ensemble_mad = np.array(
+            payload.get("ensemble_mad")
             or payload.get("ensemble_mad")
             or payload.get("mad")
             or np.zeros_like(disp_mag),
@@ -305,7 +305,7 @@ class DatabaseDataProvider(DataProvider):
             "u": u_vel,
             "v": v_vel,
             "V": V_vel,
-            "ensamble_mad": ensamble_mad,
+            "ensemble_mad": ensemble_mad,
             "dt_hours": dt_hours,
             "dt_days": dt_days,
         }

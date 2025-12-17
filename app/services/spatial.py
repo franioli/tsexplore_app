@@ -96,7 +96,7 @@ def nearest_node(
     # Extract node data at found index
     result: dict[str, Any] = {}
     result["node_id"] = int(node_idx)
-    key_to_extract = ["x", "y", "dx", "dy", "disp_mag", "u", "v", "V", "ensamble_mad"]
+    key_to_extract = ["x", "y", "dx", "dy", "disp_mag", "u", "v", "V", "ensemble_mad"]
     for key in key_to_extract:
         if key in payload:
             result[key] = payload[key][node_idx]
