@@ -81,7 +81,7 @@ async def run_node_inversion(
 
         # Per-observation ensemble MAD weights ot use if weight_method is set to 'variable'
         ens_mad = main_group.get("ensemble_mad", None)
-        if ens_mad is None or len(ens_mad) != n_obs or not np.all(np.isfinite(ens_mad)):
+        if ens_mad is None or len(ens_mad) != n_obs:
             logger.warning(
                 "Ensemble MAD array is missing or inconsistent in timeseries data. Fallback to 'residuals' for initial weights"
             )

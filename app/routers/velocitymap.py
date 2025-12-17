@@ -26,61 +26,6 @@ async def dates_list():
     return JSONResponse({"dates": dates})
 
 
-def _get_cached_image(
-    background_image_path: str | None,
-    max_dimension: int | None = None,
-) -> tuple[str | None, tuple[int, int] | None]:
-    """
-    Get cached base64 image data. Only computed once per path.
-    Returns (data_url, (width, height)) or (None, None).
-
-    The image can be optionally downscaled (max_dimension) to speed up plotting.
-    """
-    if not background_image_path:
-        logger.debug("No background image path provided")
-        return (None, None)
-
-    # Try cache first
-    data_url, size, raw_bytes = cache.get_image(background_image_path)
-    if data_url and size:
-        logger.debug(f"Using cached image: {background_image_path}")
-        return data_url, size
-
-    # Load and cache the image
-    try:
-        logger.info(f"Loading and caching background image: {background_image_path}")
-        img = Image.open(background_image_path)
-        w, h = img.size
-
-        # Downscale for speed if too large
-        if max_dimension and (w > max_dimension or h > max_dimension):
-            scale = max_dimension / max(w, h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            logger.info(f"Resizing image from {w}x{h} to {new_w}x{new_h}")
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            w, h = new_w, new_h
-
-        bio = BytesIO()
-        img.save(bio, format="PNG", optimize=True)
-        bio.seek(0)
-        raw = bio.read()
-        b64 = base64.b64encode(raw).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
-
-        # Store in cache (metadata + raw bytes)
-        cache.store_image(background_image_path, data_url, (w, h), raw)
-        logger.info(f"Cached background image: {w}x{h}, {len(b64) / 1024:.1f} KB")
-        return data_url, (w, h)
-
-    except FileNotFoundError:
-        logger.warning(f"Background image file not found: {background_image_path}")
-        return (None, None)
-    except Exception as e:
-        logger.error(f"Failed to load background image: {e}")
-        return (None, None)
-
-
 @router.get("/velocitymap", summary="Get velocity map data", tags=["velocitymap"])
 async def velocity_map(
     reference_date: str = Query(
@@ -204,3 +149,58 @@ async def velocity_map(
     )
 
     return JSONResponse(fig.to_dict())
+
+
+def _get_cached_image(
+    background_image_path: str | None,
+    max_dimension: int | None = None,
+) -> tuple[str | None, tuple[int, int] | None]:
+    """
+    Get cached base64 image data. Only computed once per path.
+    Returns (data_url, (width, height)) or (None, None).
+
+    The image can be optionally downscaled (max_dimension) to speed up plotting.
+    """
+    if not background_image_path:
+        logger.debug("No background image path provided")
+        return (None, None)
+
+    # Try cache first
+    data_url, size, raw_bytes = cache.get_image(background_image_path)
+    if data_url and size:
+        logger.debug(f"Using cached image: {background_image_path}")
+        return data_url, size
+
+    # Load and cache the image
+    try:
+        logger.info(f"Loading and caching background image: {background_image_path}")
+        img = Image.open(background_image_path)
+        w, h = img.size
+
+        # Downscale for speed if too large
+        if max_dimension and (w > max_dimension or h > max_dimension):
+            scale = max_dimension / max(w, h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            logger.info(f"Resizing image from {w}x{h} to {new_w}x{new_h}")
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            w, h = new_w, new_h
+
+        bio = BytesIO()
+        img.save(bio, format="PNG", optimize=True)
+        bio.seek(0)
+        raw = bio.read()
+        b64 = base64.b64encode(raw).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+
+        # Store in cache (metadata + raw bytes)
+        cache.store_image(background_image_path, data_url, (w, h), raw)
+        logger.info(f"Cached background image: {w}x{h}, {len(b64) / 1024:.1f} KB")
+        return data_url, (w, h)
+
+    except FileNotFoundError:
+        logger.warning(f"Background image file not found: {background_image_path}")
+        return (None, None)
+    except Exception as e:
+        logger.error(f"Failed to load background image: {e}")
+        return (None, None)

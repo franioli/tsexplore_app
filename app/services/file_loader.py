@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from joblib import Parallel, delayed
 from tqdm import tqdm
 
 from ..cache import DataCache
@@ -43,10 +44,6 @@ class FileDataProvider(DataProvider):
         # allow cache injection; default to module-level global cache for backwards compat
         self._cache = cache if cache is not None else global_cache
 
-        # caches for get_available_dates()
-        self._available_dates_cache: list[str] | None = None
-        self._available_dates_sig: tuple[str, str, str | None] | None = None
-
     def bind_cache(self, cache: DataCache):
         """Optional helper to set/replace the cache after construction."""
         self._cache = cache
@@ -58,36 +55,31 @@ class FileDataProvider(DataProvider):
         from the stem using filename_date_template.
         """
         s = self.settings
-        sig = (
-            str(s.data_dir),
-            str(s.file_search_pattern),
-            getattr(s, "filename_date_template", None),
-        )
-
-        if self._available_dates_cache is not None and self._available_dates_sig == sig:
-            return self._available_dates_cache
-
         data_path = Path(s.data_dir)
         files = data_path.glob(s.file_search_pattern)
+
+        # date patten in filenames
+        filename_date_template = getattr(s, "filename_date_template", None)
+
+        # legacy args kept for compatibility
+        filename_pattern = getattr(s, "filename_pattern", None)
+        date_format = getattr(s, "date_format", None)
 
         dates: set[str] = set()
         for f in files:
             try:
                 final_date, _initial_date = _parse_filename(
                     f,
-                    filename_date_template=getattr(s, "filename_date_template", None),
-                    # legacy args kept for compatibility
-                    filename_pattern=getattr(s, "filename_pattern", None),
-                    date_format=getattr(s, "date_format", None),
+                    filename_date_template=filename_date_template,
+                    filename_pattern=filename_pattern,
+                    date_format=date_format,
                 )
                 dates.add(final_date.strftime("%Y-%m-%d"))
-            except Exception:
-                # keep scanning; filenames may include non-DIC outputs
+            except Exception as e:
+                logger.warning(f"Skipping file {f.name}: {e}")
                 continue
 
         out = sorted(dates)
-        self._available_dates_cache = out
-        self._available_dates_sig = sig
         return out
 
     def get_dic_data(
@@ -151,15 +143,28 @@ class FileDataProvider(DataProvider):
         if self._cache.is_loaded():
             return self._cache.num_records
 
-        s = self.settings
+        data_dir = self.settings.data_dir
+
+        search_pattern = self.settings.file_search_pattern
+        filename_date_template = getattr(self.settings, "filename_date_template", None)
+        filename_pattern = getattr(self.settings, "filename_pattern", None)
+        date_format = getattr(self.settings, "date_format", None)
+
+        # dt days preferred setting
+        dt_days = getattr(self.settings, "dt_days", None)
+        dt_hours_tolerance = getattr(self.settings, "dt_hours_tolerance", 0)
+
+        invert_y = self.settings.invert_y
+
         n = _load_data_to_cache(
-            data_dir=s.data_dir,
-            file_search_pattern=s.file_search_pattern,
-            filename_date_template=getattr(s, "filename_date_template", None),
-            filename_pattern=getattr(s, "filename_pattern", None),
-            date_format=getattr(s, "date_format", None),
-            invert_y=s.invert_y,
-            dt_days_preferred=getattr(s, "dt_days_preferred", None),
+            data_dir=data_dir,
+            file_search_pattern=search_pattern,
+            filename_date_template=filename_date_template,
+            filename_pattern=filename_pattern,
+            date_format=date_format,
+            invert_y=invert_y,
+            dt_days=dt_days,
+            dt_hours_tolerance=dt_hours_tolerance,
             cache=self._cache,
         )
         self._loaded = True
@@ -175,17 +180,34 @@ class FileDataProvider(DataProvider):
 
         Dates are expected as 'YYYY-MM-DD' (from UI).
         """
-        s = self.settings
+
+        data_dir = self.settings.data_dir
+
+        search_pattern = self.settings.file_search_pattern
+        filename_date_template = getattr(self.settings, "filename_date_template", None)
+        filename_pattern = getattr(self.settings, "filename_pattern", None)
+        date_format = getattr(self.settings, "date_format", None)
+
+        # dt days preferred setting
+        dt_days = getattr(self.settings, "dt_days", None)
+        dt_hours_tolerance = getattr(self.settings, "dt_hours_tolerance", 0)
+
+        invert_y = self.settings.invert_y
+
         dt_start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
         dt_end = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
+
         n = _load_data_to_cache(
-            data_dir=s.data_dir,
-            file_search_pattern=s.file_search_pattern,
-            filename_date_template=getattr(s, "filename_date_template", None),
-            dt_days_preferred=getattr(s, "dt_days_preferred", None),
+            data_dir=data_dir,
+            file_search_pattern=search_pattern,
+            filename_date_template=filename_date_template,
+            filename_pattern=filename_pattern,
+            date_format=date_format,
             reference_date_start=dt_start,
             reference_date_end=dt_end,
-            invert_y=s.invert_y,
+            invert_y=invert_y,
+            dt_days=dt_days,
+            dt_hours_tolerance=dt_hours_tolerance,
             progress_callback=progress_callback,
             cache=self._cache,
         )
@@ -245,11 +267,23 @@ class FileDataProvider(DataProvider):
         tree, _ = self._cache.kdtree
         dist, idx = tree.query([node_x, node_y], k=1)
         if not np.isfinite(dist):
-            logger.warning("Node (%s, %s) not found in KDTree", node_x, node_y)
+            logger.warning(f"Node ({node_x}, {node_y}) not found in KDTree")
             return {}
 
         # Build groups: key -> lists
         groups: dict[int, dict[str, list[Any]]] = {}
+
+        def get_value(
+            array: np.ndarray, idx: int, record_name: str | None = None
+        ) -> Any:
+            try:
+                array_value = array[idx]
+            except IndexError:
+                logger.warning(
+                    f"Index {idx} is out of bounds for record field '{record_name}' with length {len(array)}"
+                )
+                array_value = np.nan
+            return array_value
 
         def _add_to_group(gkey: int, meta, record):
             g = groups.setdefault(
@@ -258,6 +292,7 @@ class FileDataProvider(DataProvider):
                     "reference_dates": [],
                     "initial_dates": [],
                     "final_dates": [],
+                    "dt": [],
                     "dt_days": [],
                     "dx": [],
                     "dy": [],
@@ -268,26 +303,36 @@ class FileDataProvider(DataProvider):
                     "ensemble_mad": [],
                 },
             )
+
+            # Time metadata
+            dt = meta.final_date - meta.initial_date
             g["reference_dates"].append(meta.final_date)
             g["initial_dates"].append(meta.initial_date)
             g["final_dates"].append(meta.final_date)
-            # get integer dt_days if available else compute
-            rec_dt = int(record.get("dt_days"))
-            g["dt_days"].append(rec_dt)
-            g["dx"].append(record["dx"][idx])
-            g["dy"].append(record["dy"][idx])
-            g["disp_mag"].append(record["disp_mag"][idx])
-            g["u"].append(record["u"][idx])
-            g["v"].append(record["v"][idx])
-            g["V"].append(record["V"][idx])
-            g["ensemble_mad"].append(
-                record["ensemble_mad"][idx] if "ensemble_mad" in record else None
-            )
+            g["dt"].append(dt)
+            g["dt_days"].append(dt.days)
+
+            # record data
+            g["dx"].append(get_value(record["dx"], idx, "dx"))
+            g["dy"].append(get_value(record["dy"], idx, "dy"))
+            g["disp_mag"].append(get_value(record["disp_mag"], idx, "disp_mag"))
+            g["u"].append(get_value(record["u"], idx, "u"))
+            g["v"].append(get_value(record["v"], idx, "v"))
+            g["V"].append(get_value(record["V"], idx, "V"))
+
+            # Additional variable, if available
+            if "ensemble_mad" in record and record["ensemble_mad"] is not None:
+                mad = get_value(record["ensemble_mad"], idx, "ensemble_mad")
+            else:
+                mad = None
+            g["ensemble_mad"].append(mad)
 
         # Iterate over all records in the cache (sorted by record_id)
         for meta, record in self._cache:
-            # If caller requested a specific dt_days filter, skip non-matching records
-            rec_dt_days = (meta.final_date - meta.initial_date).days
+            # If caller requested a specific dt_days filter, skip non-matching records. Round the dt_days to the closest int day.
+            rec_dt_days = np.round(
+                (meta.final_date - meta.initial_date).total_seconds() / 86400.0
+            )
             if dt_days is not None and rec_dt_days != int(dt_days):
                 continue
 
@@ -424,7 +469,9 @@ def _parse_filename(
         rx, placeholders = _compile_filename_date_template(filename_date_template)
         m = rx.match(stem)
         if not m:
-            raise ValueError(f"Filename does not match template: {file_path.name}")
+            raise ValueError(
+                f"Filename {file_path.name} does not match template: {filename_date_template}"
+            )
 
         groups = list(m.groups())
         vals: dict[str, datetime] = {}
@@ -571,35 +618,108 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
     }
 
 
-def _read_dic_file(file_path: Path, *, invert_y: bool) -> dict[str, np.ndarray]:
-    """Read a DIC file based on its extension.
+def _read_single_file(
+    path: str,
+    final_date: str,
+    initial_date: str,
+    dt_hours: int,
+    dt_days: int,
+    invert_y: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read a single DIC file and prepare the metadata and payload for caching.
+
+    This is a top-level, picklable worker intended for use with
+    concurrent.futures.ProcessPoolExecutor. It reads the given DIC file
+    (either HDF5 or text), computes displacement magnitude and velocities
+    (scaled when dt_hours > 24), and constructs the ``meta`` and ``payload``
+    dictionaries expected by the cache.
 
     Args:
-        file_path: Path to the DIC file.
-        invert_y: Whether to invert the y-axis (and dy) sign.
+        f_str: Path to the DIC file (string). Must exist.
+        final_iso: Final (reference) date as ISO-formatted string (YYYY-MM-DD or ISO).
+        initial_iso: Initial date as ISO-formatted string.
+        dt_hours: Time difference between images in hours.
+        dt_days: Time difference between images in days.
+        invert_y: If True, invert the y coordinate and dy sign.
 
     Returns:
-        A dict containing arrays: ``x``, ``y``, ``dx``, ``dy``, ``magnitude``,
-        ``ensemble_mad``.
+        A tuple (meta, payload):
+            meta (dict): contains datetime objects and dt metadata:
+                {
+                  "initial_date": datetime,
+                  "final_date": datetime,
+                  "reference_date": datetime,  # same as final_date
+                  "dt_hours": int,
+                  "dt_days": int
+                }
+            payload (dict): contains numpy arrays and auxiliary metadata:
+                {
+                  "x", "y", "dx", "dy", "disp_mag", "u", "v", "V",
+                  "ensemble_mad", "dt_hours", "dt_days",
+                  "initial_date", "final_date", "reference_date"
+                }
 
     Raises:
         FileNotFoundError: If the file does not exist.
-        ValueError: If the file extension is unsupported.
+        ValueError: If the file has an unsupported extension or is invalid.
+        Any IO / parsing errors raised while reading the file are propagated.
     """
+    f = Path(path)
+    if not f.exists():
+        raise FileNotFoundError(f"File not found: {f}")
 
-    file_path = Path(file_path)
-    if not file_path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
+    final_date_ = datetime.fromisoformat(final_date)
+    initial_date_ = datetime.fromisoformat(initial_date)
 
-    suffix = file_path.suffix.lower()
+    # Read the file according to its extension
+    suffix = f.suffix.lower()
     if suffix == ".h5":
-        data = _read_h5(file_path, invert_y)
+        dic_data = _read_h5(f, invert_y)
     elif suffix == ".txt":
-        data = _read_txt(file_path, invert_y)
+        dic_data = _read_txt(f, invert_y)
     else:
         raise ValueError(f"Unsupported file extension: {suffix}")
 
-    return data
+    dx = dic_data["dx"]
+    dy = dic_data["dy"]
+    disp_mag = dic_data["magnitude"]
+
+    # If dt > 24 hours, convert displacements to velocity (px/day)
+    if dt_hours > 24:
+        scale = 24.0 / float(dt_hours)
+        u_vel = dx * scale
+        v_vel = dy * scale
+        V_vel = disp_mag * scale
+    else:
+        u_vel = dx
+        v_vel = dy
+        V_vel = disp_mag
+
+    meta: dict[str, Any] = {
+        "initial_date": initial_date_,
+        "final_date": final_date_,
+        "reference_date": final_date_,
+        "dt_hours": int(dt_hours),
+        "dt_days": int(dt_days),
+    }
+
+    payload: dict[str, Any] = {
+        "x": dic_data["x"],
+        "y": dic_data["y"],
+        "dx": dx,
+        "dy": dy,
+        "disp_mag": disp_mag,
+        "u": u_vel,
+        "v": v_vel,
+        "V": V_vel,
+        "ensemble_mad": dic_data.get("ensemble_mad"),
+        "dt_hours": int(dt_hours),
+        "dt_days": int(dt_days),
+        "initial_date": initial_date_.strftime("%Y-%m-%d"),
+        "final_date": final_date_.strftime("%Y-%m-%d"),
+        "reference_date": final_date_.strftime("%Y-%m-%d"),
+    }
+    return meta, payload
 
 
 def _load_data_to_cache(
@@ -610,12 +730,13 @@ def _load_data_to_cache(
     filename_pattern: str | None = None,
     date_format: str | None = None,
     invert_y: bool = False,
-    dt_days_preferred: int | None,
-    dt_days_tolerance: int = 1,
+    dt_days: int | list[int] | None = None,
+    dt_hours_tolerance: int = 0,
     reference_date_start: datetime | None = None,
     reference_date_end: datetime | None = None,
     cache: DataCache = global_cache,
     progress_callback: Callable[[int, int], None] | None = None,
+    max_workers: int | None = 1,
 ) -> int:
     """Load all DIC files from disk into the global cache (one record per file).
 
@@ -628,9 +749,9 @@ def _load_data_to_cache(
         filename_pattern: Regex pattern extracting slave/master date strings.
         date_format: Format string for parsing the extracted date strings.
         invert_y: Whether to invert the y-axis (and dy) sign.
-        dt_days_preferred: If set (> 0), keep only records within ``dt_days_tolerance``
+        dt_days: If set (> 0), keep only records within ``dt_days_tolerance``
             from the preferred dt. If ``None``, all records are kept.
-        dt_days_tolerance: Allowed absolute deviation from ``dt_days_preferred`` in days.
+        dt_days_tolerance: Allowed absolute deviation from ``dt_days`` in days.
 
     Returns:
         Number of loaded records stored into the global cache.
@@ -659,80 +780,72 @@ def _load_data_to_cache(
         if reference_date_end and final_date.date() > reference_date_end.date():
             continue
 
-        # Compute time difference
+        # Filter by dt_days if provided
+        # If user supplied dt_days (int or list[int]), check whether this file's
+        # actual dt (in hours) matches any requested dt (days -> hours) within
+        # the provided hourly tolerance. The check is performed in hours to
+        # support hourly tolerances.
         dt_hours = int(abs((final_date - initial_date).total_seconds()) / 3600)
-        dt_days = int(dt_hours / 24)
+        dt_days_val = int(dt_hours // 24)
 
-        # Filter by preferred dt
-        if dt_days_preferred is not None and int(dt_days_preferred) > 0:
-            skip_file = abs(dt_days - int(dt_days_preferred)) > max(
-                0, int(dt_days_tolerance)
+        if dt_days is not None:
+            dt_filter_list = (
+                tuple(dt_days) if isinstance(dt_days, list) else (int(dt_days),)
             )
-            if skip_file:
+
+        else:
+            dt_filter_list = ()
+
+        if dt_filter_list:
+            matched = False
+            for dt in dt_filter_list:
+                target_hours = int(dt) * 24
+                if abs(dt_hours - target_hours) <= int(dt_hours_tolerance):
+                    matched = True
+                    break
+            if not matched:
+                logger.debug(
+                    f"Skipping {f.name}: dt_hours={dt_hours} not within any {dt_filter_list} ±{dt_hours_tolerance}h"
+                )
                 continue
 
-        candidates.append((f, final_date, initial_date, dt_hours, dt_days))
+        # append candidate using actual dt_hours and computed dt_days (int)
+        candidates.append((f, final_date, initial_date, dt_hours, dt_days_val))
 
     total = len(candidates)
     done = 0
     loaded = 0
-    for f, final_date, initial_date, dt_hours, dt_days in tqdm(
-        candidates, desc="Loading DIC files", unit="file", total=total
-    ):
+    if total == 0:
+        logger.info("No candidate files found")
+        return 0
+
+    # Run parallel read/prepare tasks (safe for HDF5 / numpy since each job is a separate process)
+    jobs = (
+        delayed(_read_single_file)(
+            str(f),
+            final_date.isoformat(),
+            initial_date.isoformat(),
+            dt_hours,
+            dt_days,
+            invert_y,
+        )
+        for f, final_date, initial_date, dt_hours, dt_days in tqdm(
+            candidates, desc="Reading DIC files", unit="file"
+        )
+    )
+    results = Parallel(n_jobs=max_workers, prefer="processes")(jobs)
+
+    # Sequentially store results into cache (single-threaded to keep cache consistent)
+    for meta, payload in results:
         try:
-            # Read DIC data
-            dic_data = _read_dic_file(f, invert_y=invert_y)
-            dx = dic_data["dx"]
-            dy = dic_data["dy"]
-            disp_mag = dic_data["magnitude"]
-
-            # Compute velocity (px/day) if dt > 24h, otherwise keep displacement as-is
-            if dt_hours > 24:
-                scale = 24.0 / dt_hours
-                u_vel = dx * scale
-                v_vel = dy * scale
-                V_vel = disp_mag * scale
-            else:
-                u_vel = dx
-                v_vel = dy
-                V_vel = disp_mag
-
-            meta = {
-                "initial_date": initial_date,
-                "final_date": final_date,
-                "reference_date": final_date,
-                "dt_hours": dt_hours,
-                "dt_days": dt_days,
-            }
-            payload = {
-                "x": dic_data["x"],
-                "y": dic_data["y"],
-                "dx": dx,
-                "dy": dy,
-                "disp_mag": disp_mag,
-                "u": u_vel,
-                "v": v_vel,
-                "V": V_vel,
-                "ensemble_mad": dic_data["ensemble_mad"],
-                "dt_hours": dt_hours,
-                "dt_days": dt_days,
-                # keep dates in payload too (handy for API responses/metadata)
-                "initial_date": initial_date.strftime("%Y%m%d"),
-                "final_date": final_date.strftime("%Y%m%d"),
-                "reference_date": final_date.strftime("%Y%m%d"),
-            }
-
             cache.store_dic_record(meta=meta, payload=payload)
             loaded += 1
-
         except Exception as e:
-            logger.error(f"Skipping {f.name}: {e}")
-            continue
-
-        finally:
-            done += 1
-            if progress_callback:
-                progress_callback(done, total)
+            logger.error(f"Failed storing record: {e}")
+        done += 1
+        if progress_callback:
+            progress_callback(done, total)
 
     logger.info(f"Loaded {loaded} DIC files from disk (records={cache.num_records})")
+
     return loaded

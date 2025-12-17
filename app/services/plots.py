@@ -196,18 +196,28 @@ def make_velocity_map_figure(
     else:
         logger.error(f"Unsupported plot type: {plot_type}")
 
+    # Highlight selected node if provided
     if selected_node:
         fig.add_trace(
-            go.Scatter(
+            go.Scattergl(
+                x=[selected_node["x"]],
+                y=[selected_node["y"]],
+                mode="markers",
+                marker=dict(size=20, color="white", opacity=0.85, line=dict(width=0)),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scattergl(
                 x=[selected_node["x"]],
                 y=[selected_node["y"]],
                 mode="markers",
                 marker=dict(
-                    size=18,
+                    size=14,
                     color="red",
                     symbol="x",
                     line=dict(width=2, color="white"),
-                    opacity=0.9,
                 ),
                 name="Selected",
                 hoverinfo="skip",
@@ -387,22 +397,6 @@ def make_timeseries_figure(
             f"Got: u={len(u)}, v={len(v)}, V={len(V)}"
         )
 
-    # Validate standard deviation arrays if provided
-    if u_std is not None and len(u_std) != n_points:
-        raise ValueError(
-            f"u_std must have same length as dates ({n_points}), got {len(u_std)}"
-        )
-    if v_std is not None and len(v_std) != n_points:
-        raise ValueError(
-            f"v_std must have same length as dates ({n_points}), got {len(v_std)}"
-        )
-    if V_std is not None and len(V_std) != n_points:
-        raise ValueError(
-            f"V_std must have same length as dates ({n_points}), got {len(V_std)}"
-        )
-
-    fig = go.Figure()
-
     # Validate component names
     components = list(components) if components is not None else ["V"]
     valid_components = {"u", "v", "V"}
@@ -422,38 +416,39 @@ def make_timeseries_figure(
         "v": "v (North)",
         "V": "|v|",
     }
+    components_arrays = {"u": u, "v": v, "V": V}
+
+    # Get standard deviation arrays if provided
+    std_arrays = {"u": u_std, "v": v_std, "V": V_std}
+    for name, arr in std_arrays.items():
+        if arr is not None and len(arr) != n_points:
+            raise ValueError(
+                f"Standard deviation array '{name}' must have same length as dates ({n_points}). "
+                f"Got: {len(arr)}"
+            )
+
+    # Try to get the dt from the metadata for hovertemplate
+    dt_days = None
+    if (
+        metadata
+        and "dt_days" in metadata
+        and isinstance(metadata["dt_days"], (int, float))
+    ):
+        dt_days = int(metadata["dt_days"])
+        for name in component_names.values():
+            name += f" (dt={dt_days} days)"
+
+    fig = go.Figure()
 
     # Add traces for selected components with error bands
-    if "u" in components:
+    for name in components:
         add_trace_with_error_band(
             fig=fig,
             x=dates,
-            y=u,
-            y_std=u_std,
-            name=component_names["u"],
-            color=component_colors["u"],
-            marker_mode=marker_mode,
-        )
-
-    if "v" in components:
-        add_trace_with_error_band(
-            fig=fig,
-            x=dates,
-            y=v,
-            y_std=v_std,
-            name=component_names["v"],
-            color=component_colors["v"],
-            marker_mode=marker_mode,
-        )
-
-    if "V" in components:
-        add_trace_with_error_band(
-            fig=fig,
-            x=dates,
-            y=V,
-            y_std=V_std,
-            name=component_names["V"],
-            color=component_colors["V"],
+            y=components_arrays[name],
+            y_std=std_arrays[name],
+            name=component_names[name],
+            color=component_colors[name],
             marker_mode=marker_mode,
         )
 
@@ -469,12 +464,12 @@ def make_timeseries_figure(
         title=dict(text=title, font=dict(size=16)),
         xaxis_title="Date",
         yaxis_title=y_label,
-        xaxis=dict(range=x_range, tickformat="%d/%m/%Y", tickangle=-45),
+        xaxis=dict(range=x_range, tickformat="%d/%m/%Y"),
         yaxis=dict(range=y_range),
         dragmode="zoom",
         template="plotly_white",
-        margin=dict(l=50, r=20, t=50, b=50),
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="left"),
+        margin=dict(l=80, r=20, t=50, b=50),
+        legend=dict(orientation="v", x=0.01, xanchor="left", y=0.95, yanchor="top"),
         hovermode="x unified",
     )
 
@@ -505,7 +500,7 @@ def make_timeseries_figure(
 
 def add_trace_with_error_band(
     fig: go.Figure,
-    x: list[datetime],
+    x: list[datetime] | np.ndarray,
     y: np.ndarray,
     y_std: np.ndarray | None,
     name: str,
@@ -524,6 +519,10 @@ def add_trace_with_error_band(
         color: Color for line and fill
         marker_mode: Display mode - "lines+markers", "lines", or "markers"
     """
+
+    if isinstance(x, np.ndarray):
+        x = x.tolist()
+
     # Add error band if std is provided
     if y_std is not None:
         # Upper bound

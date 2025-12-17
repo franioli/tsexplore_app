@@ -67,7 +67,8 @@ class Settings(BaseSettings):
     background_image_opacity: float = 1.0
 
     # Processing parameters
-    dt_days_preferred: int | None = None
+    dt_days: list[int] | int | None = None
+    dt_hours_tolerance: int = 0
     invert_y: bool = False
     node_search_radius: float = 5.0
 
