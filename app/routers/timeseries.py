@@ -74,10 +74,10 @@ async def timeseries(
 
     # Get dt parameters from settings (not from query for now)
     dt_days = settings.dt_days
-    group_by_dt = True
     delta_days = (
         settings.dt_days if isinstance(settings.dt_days, list) else [settings.dt_days]
     )
+    dt_hours_tolerance = settings.dt_hours_tolerance
 
     # Parse components
     # comp_list = [c.strip() for c in components.split(",") if c.strip()]
@@ -85,15 +85,27 @@ async def timeseries(
 
     # Fetch time series data for the node
     provider = get_data_provider()
-    ts_groups = provider.extract_node_timeseries(
-        node_x=node_x,
-        node_y=node_y,
-        dt_days=dt_days,
-        group_by_dt=group_by_dt,
-        delta_days=delta_days,
-    )
-    if not ts_groups:
-        raise HTTPException(status_code=404, detail="No timeseries data for node")
+
+    ts_groups: dict[int, dict[str, Any]] = {}
+    if not delta_days:
+        group = provider.extract_node_timeseries(
+            node_x=node_x,
+            node_y=node_y,
+            dt_days=dt_days,
+            dt_hours_tolerance=dt_hours_tolerance,
+        )
+        if group:
+            ts_groups[0] = group
+    else:
+        for dt in delta_days:
+            group = provider.extract_node_timeseries(
+                node_x=node_x,
+                node_y=node_y,
+                dt_days=dt,
+                dt_hours_tolerance=dt_hours_tolerance,
+            )
+            if group:
+                ts_groups[dt] = group
     group_keys = sorted(ts_groups.keys())
 
     # Build figure

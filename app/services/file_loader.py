@@ -243,16 +243,26 @@ class FileDataProvider(DataProvider):
         node_y: float,
         *,
         dt_days: int | None = None,
-        group_by_dt: bool = True,
-        delta_days: list[int] | None = None,
-    ) -> dict[int, dict[str, np.ndarray]]:
-        """Extract a node time series across all available slave dates, optionally grouped by dt.
+        dt_hours_tolerance: float = 0.0,
+    ) -> dict[str, np.ndarray]:
+        """Extract a time series for the nearest mesh node at (node_x, node_y).
 
-        Returns a dict mapping group_dt -> timeseries dict with numpy arrays. If group_by_dt is False
-        a single group with key 0 is returned containing all records.
+        This returns a single timeseries (not grouped). If ``dt_days`` is given,
+        only records whose actual time difference (final - initial) is within
+        ``dt_days_tolerance`` days of ``dt_days`` are included. Tolerances are
+        expressed in fractional days (e.g. 0.5 = 12 hours).
 
-        If delta_days is provided it is used as the list of dt bucket centers; each record's dt_days
-        is rounded to the nearest provided delta_days value.
+        Args:
+            node_x: X coordinate of the requested node.
+            node_y: Y coordinate of the requested node.
+            dt_days: If provided, filter records to those with dt close to this value (days).
+            dt_days_tolerance: Allowed absolute tolerance around ``dt_days`` (in days).
+
+        Returns:
+            A dict with numpy arrays for keys:
+              'reference_dates', 'initial_dates', 'final_dates', 'dt_days',
+              'dx', 'dy', 'disp_mag', 'u', 'v', 'V', 'ensemble_mad'
+            If no matching records are found an empty dict is returned.
         """
         if not self._cache.is_loaded():
             raise ValueError(
@@ -270,8 +280,18 @@ class FileDataProvider(DataProvider):
             logger.warning(f"Node ({node_x}, {node_y}) not found in KDTree")
             return {}
 
-        # Build groups: key -> lists
-        groups: dict[int, dict[str, list[Any]]] = {}
+        # Accumulate lists for a single timeseries
+        ref_dates: list[Any] = []
+        init_dates: list[Any] = []
+        final_dates: list[Any] = []
+        dt_days_list: list[int] = []
+        dx_list: list[Any] = []
+        dy_list: list[Any] = []
+        disp_mag_list: list[Any] = []
+        u_list: list[Any] = []
+        v_list: list[Any] = []
+        V_list: list[Any] = []
+        mad_list: list[Any] = []
 
         def get_value(
             array: np.ndarray, idx: int, record_name: str | None = None
@@ -285,104 +305,55 @@ class FileDataProvider(DataProvider):
                 array_value = np.nan
             return array_value
 
-        def _add_to_group(gkey: int, meta, record):
-            g = groups.setdefault(
-                gkey,
-                {
-                    "reference_dates": [],
-                    "initial_dates": [],
-                    "final_dates": [],
-                    "dt": [],
-                    "dt_days": [],
-                    "dx": [],
-                    "dy": [],
-                    "disp_mag": [],
-                    "u": [],
-                    "v": [],
-                    "V": [],
-                    "ensemble_mad": [],
-                },
-            )
-
-            # Time metadata
-            dt = meta.final_date - meta.initial_date
-            g["reference_dates"].append(meta.final_date)
-            g["initial_dates"].append(meta.initial_date)
-            g["final_dates"].append(meta.final_date)
-            g["dt"].append(dt)
-            g["dt_days"].append(dt.days)
-
-            # record data
-            g["dx"].append(get_value(record["dx"], idx, "dx"))
-            g["dy"].append(get_value(record["dy"], idx, "dy"))
-            g["disp_mag"].append(get_value(record["disp_mag"], idx, "disp_mag"))
-            g["u"].append(get_value(record["u"], idx, "u"))
-            g["v"].append(get_value(record["v"], idx, "v"))
-            g["V"].append(get_value(record["V"], idx, "V"))
-
-            # Additional variable, if available
-            if "ensemble_mad" in record and record["ensemble_mad"] is not None:
-                mad = get_value(record["ensemble_mad"], idx, "ensemble_mad")
-            else:
-                mad = None
-            g["ensemble_mad"].append(mad)
-
-        # Iterate over all records in the cache (sorted by record_id)
+        # Iterate over all records in the cache (sorted by record_id) and filter by dt_days+tolerance
         for meta, record in self._cache:
-            # If caller requested a specific dt_days filter, skip non-matching records. Round the dt_days to the closest int day.
-            rec_dt_days = np.round(
-                (meta.final_date - meta.initial_date).total_seconds() / 86400.0
-            )
-            if dt_days is not None and rec_dt_days != int(dt_days):
-                continue
+            rec_dt_hours = (
+                meta.final_date - meta.initial_date
+            ).total_seconds() / 3600.0
+            if dt_days is not None:
+                target_hours = float(dt_days) * 24.0
+                if abs(rec_dt_hours - target_hours) > dt_hours_tolerance:
+                    # skip if outside tolerance
+                    continue
 
-            if not group_by_dt:
-                grp_key = 0
+            # keep this record
+            ref_dates.append(meta.final_date)
+            init_dates.append(meta.initial_date)
+            final_dates.append(meta.final_date)
+            dt_days_list.append(int(round(rec_dt_hours / 24.0)))
+            dx_list.append(get_value(record["dx"], idx, "dx"))
+            dy_list.append(get_value(record["dy"], idx, "dy"))
+            disp_mag_list.append(get_value(record["disp_mag"], idx, "disp_mag"))
+            u_list.append(get_value(record["u"], idx, "u"))
+            v_list.append(get_value(record["v"], idx, "v"))
+            V_list.append(get_value(record["V"], idx, "V"))
+            if "ensemble_mad" in record and record["ensemble_mad"] is not None:
+                mad_list.append(get_value(record["ensemble_mad"], idx, "ensemble_mad"))
             else:
-                if delta_days:
-                    # round to closest provided delta_days value
-                    closest = min(delta_days, key=lambda d: abs(d - rec_dt_days))
-                    grp_key = int(closest)
-                else:
-                    # group by exact dt_days value
-                    grp_key = int(rec_dt_days)
+                mad_list.append(None)
 
-            _add_to_group(grp_key, meta, record)
+        # Convert to numpy arrays, sort by reference date
+        if len(ref_dates) == 0:
+            return {}
 
-        # Convert lists to numpy arrays for each group
-        out: dict[int, dict[str, np.ndarray]] = {}
-        for gkey, g in groups.items():
-            # convert reference dates to numpy datetimes and compute sort order
-            ref_dates = np.asarray(g["reference_dates"], dtype="datetime64[D]")
-            if ref_dates.size == 0:
-                # empty group -> skip
-                continue
+        ref_arr = np.asarray(ref_dates, dtype="datetime64[D]")
+        order = np.argsort(ref_arr)
 
-            # Get order index to sort data
-            order = np.argsort(ref_dates)
-
-            reference_dates = np.asarray(g["reference_dates"], dtype="datetime64[D]")
-            initial_dates = np.asarray(g["initial_dates"], dtype="datetime64[D]")
-            final_dates = np.asarray(g["final_dates"], dtype="datetime64[D]")
-
-            out[gkey] = {
-                "reference_dates": reference_dates[order],
-                "initial_dates": initial_dates[order],
-                "final_dates": final_dates[order],
-                "dt_days": np.asarray(g["dt_days"], dtype=np.int32)[order],
-                "dx": np.asarray(g["dx"], dtype=np.float32)[order],
-                "dy": np.asarray(g["dy"], dtype=np.float32)[order],
-                "disp_mag": np.asarray(g["disp_mag"], dtype=np.float32)[order],
-                "u": np.asarray(g["u"], dtype=np.float32)[order],
-                "v": np.asarray(g["v"], dtype=np.float32)[order],
-                "V": np.asarray(g["V"], dtype=np.float32)[order],
-                "ensemble_mad": np.asarray(
-                    [v if v is not None else np.nan for v in g["ensemble_mad"]],
-                    dtype=np.float32,
-                )[order],
-            }
-
-        return out
+        return {
+            "reference_dates": ref_arr[order],
+            "initial_dates": np.asarray(init_dates, dtype="datetime64[D]")[order],
+            "final_dates": np.asarray(final_dates, dtype="datetime64[D]")[order],
+            "dt_days": np.asarray(dt_days_list, dtype=np.int32)[order],
+            "dx": np.asarray(dx_list, dtype=np.float32)[order],
+            "dy": np.asarray(dy_list, dtype=np.float32)[order],
+            "disp_mag": np.asarray(disp_mag_list, dtype=np.float32)[order],
+            "u": np.asarray(u_list, dtype=np.float32)[order],
+            "v": np.asarray(v_list, dtype=np.float32)[order],
+            "V": np.asarray(V_list, dtype=np.float32)[order],
+            "ensemble_mad": np.asarray(
+                [v if v is not None else np.nan for v in mad_list], dtype=np.float32
+            )[order],
+        }
 
 
 @lru_cache(maxsize=64)
