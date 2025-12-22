@@ -393,29 +393,52 @@ async function runTSInversion() {
       return;
     }
 
-    // Decide overlay color: when we refreshed the base plot use 'darkred' (high-contrast),
-    // otherwise use 'orange' to distinguish from existing traces.
-    const overlayColor = refresh_plot ? "darkred" : "orange";
-
-    // Add overlay trace (magnitude) to existing timeseries plot
-    const trace = {
-      x: inv.dates,
-      y: inv.V_hat,
-      mode: "lines+markers",
-      name: "|v| (Inverted)",
-      line: { color: overlayColor, width: 2 },
-      marker: { size: 6, symbol: "diamond" },
-    };
-
-    if (typeof Plotly !== "undefined") {
-      // If plot exists, add traces; otherwise render fresh with a single trace
-      const lowerDiv = el("lower");
-      if (lowerDiv && lowerDiv.data && lowerDiv.data.length > 0) {
-        await Plotly.addTraces("lower", trace);
+    try {
+      // Ask server to build the Plotly trace for this inversion result
+      const rTrace = await fetch("/api/inversion/trace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ node_inversion: inv, refresh_plot: refresh_plot }),
+      });
+      if (!rTrace.ok) {
+        console.error("Failed to build inversion trace:", await rTrace.text());
+        alert("Failed to build inversion overlay");
       } else {
-        await Plotly.newPlot("lower", [trace]);
+        const tracePayload = await rTrace.json();
+        const trace = tracePayload.trace;
+        if (lowerDiv && lowerDiv.data && lowerDiv.data.length > 0) {
+          await Plotly.addTraces("lower", trace);
+        } else {
+          await Plotly.newPlot("lower", [trace]);
+        }
       }
+    } catch (err) {
+      console.error("Error adding inversion overlay:", err);
+      alert("Error adding inversion overlay. See console.");
     }
+    // // Decide overlay color: when we refreshed the base plot use 'darkred' (high-contrast),
+    // // otherwise use 'orange' to distinguish from existing traces.
+    // const overlayColor = refresh_plot ? "darkred" : "orange";
+
+    // // Add overlay trace (magnitude) to existing timeseries plot
+    // const trace = {
+    //   x: inv.dates,
+    //   y: inv.V_hat,
+    //   mode: "lines+markers",
+    //   name: "|v| (Inverted)",
+    //   line: { color: overlayColor, width: 2 },
+    //   marker: { size: 6, symbol: "diamond" },
+    // };
+
+    // if (typeof Plotly !== "undefined") {
+    //   // If plot exists, add traces; otherwise render fresh with a single trace
+    //   const lowerDiv = el("lower");
+    //   if (lowerDiv && lowerDiv.data && lowerDiv.data.length > 0) {
+    //     await Plotly.addTraces("lower", trace);
+    //   } else {
+    //     await Plotly.newPlot("lower", [trace]);
+    //   }
+    // }
   } catch (err) {
     console.error("Error running TS inversion:", err);
     alert("Error running TS inversion. Check console for details.");
@@ -425,6 +448,10 @@ async function runTSInversion() {
       btn.textContent = "Run TS inversion";
     }
   }
+
+    
+
+
 }
 
 // -----------------------------------------------------------------------------

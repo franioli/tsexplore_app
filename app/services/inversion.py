@@ -274,12 +274,19 @@ def invert_node(
     # -calcolo vettore deltaT
     deltat = np.abs(np.diff(timestamp, axis=1).astype("float32")).squeeze()
 
-    # -creo vettore dei tempi per le osservazioni
+    # ---creo vettore dei tempi dove ho un'osservazione
+    # -1) cerco valori temporali per cui ho un dato
     Tu = np.sort(np.unique(timestamp))
+    # -2) creo vettore degli intervalli su cui calcolare lo spostamento
     Time_hat = np.zeros([len(Tu) - 1, 2], dtype="datetime64[D]")
     for i in range(len(Tu) - 1):
         Time_hat[i, :] = [Tu[i], Tu[i + 1]]
+    # -calcolo deltat tra osservazioni
     DT_hat = np.diff(Time_hat, axis=1).astype("float").squeeze()
+
+    # -inizializzo matrici dei risultati
+    EW_hat = np.ones((len(ew), len(DT_hat)), dtype="float32") * -9999
+    NS_hat = np.ones((len(ns), len(DT_hat)), dtype="float32") * -9999
 
     # -inizializzo matrice di regressione A
     A = np.zeros((len(ew), Time_hat.shape[0])).astype("float32")
@@ -290,10 +297,6 @@ def invert_node(
     # -observations e incognite
     n = A.shape[0]
     p = A.shape[1]
-
-    # -calcolo le due componenti
-    EW_hat = np.zeros(len(DT_hat), dtype="float32")
-    NS_hat = np.zeros(len(DT_hat), dtype="float32")
 
     comps = [ew, ns]
     comp_names = ["EW", "NS"]
@@ -316,10 +319,10 @@ def invert_node(
                 )
             W0 = weight_definition(ew, ns, method="variable", cc=weight_variable)
         elif weight_method == "charrier":
-            # Note: Charrier method requires EW/NS which are not available
-            # in single-node inversion. This would need to be passed as additional args.
-            raise NotImplementedError(
-                "Charrier method requires EW/NS volumes - not available in single-node mode"
+            logger.warning(
+                "Weight method 'charrier' requires spatial data volumes, "
+                "which are not provided in this function. "
+                "Please use 'residuals', 'uniform', or 'variable' instead."
             )
         else:
             raise ValueError(

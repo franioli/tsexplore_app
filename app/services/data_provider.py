@@ -81,15 +81,25 @@ class DataProvider(Protocol):
         node_y: float,
         *,
         dt_days: int | None = None,
-        group_by_dt: bool = True,
-        delta_days: list[int] | None = None,
-    ) -> dict[int, dict[str, np.ndarray]]:
-        """Extract a node time series across all available slave dates, optionally grouped by dt.
+        dt_hours_tolerance: float = 0.0,
+    ) -> dict[str, np.ndarray]:
+        """Extract a time series for the nearest mesh node at (node_x, node_y).
 
-        Returns a dict mapping group_dt -> timeseries dict with numpy arrays. If group_by_dt is False
-        a single group with key 0 is returned containing all records.
+        This returns a single timeseries (not grouped). If ``dt_days`` is given,
+        only records whose actual time difference (final - initial) is within
+        ``dt_days_tolerance`` days of ``dt_days`` are included. Tolerances are
+        expressed in fractional days (e.g. 0.5 = 12 hours).
 
-        If delta_days is provided it is used as the list of dt bucket centers; each record's dt_days
-        is rounded to the nearest provided delta_days value.
+        Args:
+            node_x: X coordinate of the requested node.
+            node_y: Y coordinate of the requested node.
+            dt_days: If provided, filter records to those with dt close to this value (days).
+            dt_days_tolerance: Allowed absolute tolerance around ``dt_days`` (in days).
+
+        Returns:
+            A dict with numpy arrays for keys:
+              'reference_dates', 'initial_dates', 'final_dates', 'dt_days',
+              'dx', 'dy', 'disp_mag', 'u', 'v', 'V', 'ensemble_mad'
+            If no matching records are found an empty dict is returned.
         """
         ...

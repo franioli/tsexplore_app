@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Results directory
     results_dir: Path = Path("./results")
 
+    # Max workers for file loading
+    max_workers: int = 8
+
     # Logging
     log_level: str = "INFO"
 

@@ -2,7 +2,7 @@
 use_database: false
 
 # Data directory containing day_dic files
-data_dir: data/day_dic/ # data/day_dic/
+data_dir: ../ppcx_dic/output/2019/correlation/h5 #data/h5/ # data/day_dic/
 
 # File glob pattern
 file_search_pattern: "*"
@@ -14,8 +14,8 @@ file_search_pattern: "*"
 # - day_dic_20230104-20230101.txt -> "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
 # - dic_20230104_20230101.txt     -> "dic_{final:%Y%m%d}_{initial:%Y%m%d}"
 # - 20230104-20230101_dic.txt     -> "{final:%Y%m%d}-{initial:%Y%m%d}_dic"
-filename_date_template: "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
-# filename_date_template: "day_dic_{final:%Y-%m-%d}_{initial:%Y-%m-%d}_*"
+# filename_date_template: "day_dic_{final:%Y%m%d}-{initial:%Y%m%d}"
+filename_date_template: "day_dic_{final:%Y-%m-%d}_{initial:%Y-%m-%d}_*"
 
 # Background image path (optional)
 # background_image: ./data/PPCX_2_2021_08_03_13_01_02.jpg 
@@ -28,7 +28,10 @@ background_image: null #"./data/PPCX_2_2021_08_03_13_01_02.jpg"
 # Data settings
 dt_days: [3,5]  # Set to an integer (e.g., 3) or to a list of integer (e.g., [3,5]) to filter by preferred time delta in days or null to keep all
 dt_hours_tolerance: 20  # Allowed deviation from preferred dt_days in hours
-invert_y: true # Invert Y axis in plots
+invert_y: false # Invert Y axis in plots
+
+# Parallel processing
+max_workers: 8  # Maximum number of workers for file loading
 
 # log level
 log_level: "DEBUG"

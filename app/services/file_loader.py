@@ -166,6 +166,7 @@ class FileDataProvider(DataProvider):
             dt_days=dt_days,
             dt_hours_tolerance=dt_hours_tolerance,
             cache=self._cache,
+            max_workers=self.settings.max_workers,
         )
         self._loaded = True
         return n
@@ -310,6 +311,8 @@ class FileDataProvider(DataProvider):
             rec_dt_hours = (
                 meta.final_date - meta.initial_date
             ).total_seconds() / 3600.0
+
+            # Filter by dt_days if requested
             if dt_days is not None:
                 target_hours = float(dt_days) * 24.0
                 if abs(rec_dt_hours - target_hours) > dt_hours_tolerance:
@@ -521,6 +524,15 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
     """Faster HDF5 reader: read only needed datasets and use read_direct to avoid extra copies."""
     import h5py
 
+    # helper to read a dataset into preallocated array (if present)
+    def _read_ds(group, name, dtype=np.float32, shape=None):
+        if name not in group:
+            return np.zeros(shape or (n_nodes,), dtype=dtype)
+        ds = group[name]
+        out = np.empty(ds.shape, dtype=ds.dtype)
+        ds.read_direct(out)
+        return out
+
     with h5py.File(file_path, "r") as f:
         # pick ensemble group or first pair group
         if "ensemble" in f:
@@ -538,40 +550,22 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
             # fallback: try dx length or zero
             n_nodes = int(g.get("dx", np.empty(0)).shape[0])
 
-        # helper to read a dataset into preallocated array (if present)
-        def _read_ds(name, dtype=np.float32, shape=None):
-            if name not in g:
-                return np.zeros(shape or (n_nodes,), dtype=dtype)
-            ds = g[name]
-            out = np.empty(ds.shape, dtype=ds.dtype)
-            ds.read_direct(out)
-            return out
-
-        nodes = _read_ds("nodes", dtype=np.float32)
+        nodes = _read_ds(g, "nodes", dtype=np.float32)
         if nodes.ndim == 2 and nodes.shape[1] >= 2:
             x = nodes[:, 0].astype(np.float32)
             y = nodes[:, 1].astype(np.float32)
         else:
-            x = _read_ds("x", dtype=np.float32, shape=(n_nodes,))
-            y = _read_ds("y", dtype=np.float32, shape=(n_nodes,))
+            x = _read_ds(g, "x", dtype=np.float32, shape=(n_nodes,))
+            y = _read_ds(g, "y", dtype=np.float32, shape=(n_nodes,))
 
-        dx = _read_ds("dx", dtype=np.float32, shape=(n_nodes,))
-        dy = _read_ds("dy", dtype=np.float32, shape=(n_nodes,))
-
-        # prefer explicit 'mad' or fall back to 'corr' or zeros
-        if "mad" in g:
-            ensemble_mad = _read_ds("mad", dtype=np.float32, shape=(n_nodes,))
-        elif "corr" in g:
-            ensemble_mad = _read_ds("corr", dtype=np.float32, shape=(n_nodes,))
-        else:
-            ensemble_mad = np.zeros_like(dx)
+        dx = _read_ds(g, "dx", dtype=np.float32, shape=(n_nodes,))
+        dy = _read_ds(g, "dy", dtype=np.float32, shape=(n_nodes,))
 
         # ensure 1-D and length-consistent
         x = np.asarray(x, dtype=np.float32).ravel()[:n_nodes]
         y = np.asarray(y, dtype=np.float32).ravel()[:n_nodes]
         dx = np.asarray(dx, dtype=np.float32).ravel()[:n_nodes]
         dy = np.asarray(dy, dtype=np.float32).ravel()[:n_nodes]
-        ensemble_mad = np.asarray(ensemble_mad, dtype=np.float32).ravel()[:n_nodes]
 
         if invert_y:
             y = -y
@@ -579,14 +573,40 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
 
         magnitude = np.hypot(dx, dy)
 
-    return {
+        # read additional fields if present
+        additionals: dict[str, np.ndarray] = {}
+        if "mad" in g:
+            mad = _read_ds(g, "mad", dtype=np.float32, shape=(n_nodes,))
+            additionals["ensemble_mad"] = mad
+        elif "ensemble_mad" in g:
+            mad = _read_ds(g, "ensemble_mad", dtype=np.float32, shape=(n_nodes,))
+            additionals["ensemble_mad"] = mad
+        else:
+            additionals["ensemble_mad"] = np.full((n_nodes,), np.nan, dtype=np.float32)
+
+        if "corr" in g:
+            corr = _read_ds(g, "corr", dtype=np.float32, shape=(n_nodes,))
+            additionals["corr_score"] = corr
+
+        # Manage additional fields
+        for k, v in additionals.items():
+            v_arr = np.asarray(v, dtype=np.float32).ravel()[:n_nodes]
+            additionals[k] = v_arr
+
+        print(f"file: {file_path.name}")
+        print(additionals["ensemble_mad"])
+        print("-----")
+
+    data = {
         "x": x,
         "y": y,
         "dx": dx,
         "dy": dy,
         "magnitude": magnitude,
-        "ensemble_mad": ensemble_mad,
     }
+    data.update(additionals)
+
+    return data
 
 
 def _read_single_file(
