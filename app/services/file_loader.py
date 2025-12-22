@@ -27,7 +27,7 @@ from tqdm import tqdm
 
 from ..cache import DataCache
 from ..cache import cache as global_cache
-from ..config import get_settings
+from ..config import Settings, get_settings
 from .data_provider import DataProvider
 
 logger = logging.getLogger(__name__)
@@ -36,10 +36,13 @@ logger = logging.getLogger(__name__)
 class FileDataProvider(DataProvider):
     """Load DIC data from text files on disk."""
 
-    def __init__(self, cache: DataCache | None = None):
+    def __init__(
+        self, cache: DataCache | None = None, settings: Settings | None = None
+    ):
         """Initialize the file-backed provider."""
 
-        self.settings = get_settings()
+        # use provided settings or global
+        self.settings = settings if settings is not None else get_settings()
 
         # allow cache injection; default to module-level global cache for backwards compat
         self._cache = cache if cache is not None else global_cache

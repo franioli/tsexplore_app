@@ -26,7 +26,7 @@ background_image: null #"./data/PPCX_2_2021_08_03_13_01_02.jpg"
 # results_dir: ./results
 
 # Data settings
-dt_days: [1, 3,5]  # Set to an integer (e.g., 3) or to a list of integer (e.g., [3,5]) to filter by preferred time delta in days or null to keep all
+dt_days: [1,3,5]  # Set to an integer (e.g., 3) or to a list of integer (e.g., [3,5]) to filter by preferred time delta in days or null to keep all
 dt_hours_tolerance: 20  # Allowed deviation from preferred dt_days in hours
 invert_y: false # Invert Y axis in plots
 

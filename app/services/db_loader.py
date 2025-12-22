@@ -19,8 +19,9 @@ import psycopg
 import requests
 from tqdm import tqdm
 
-from ..cache import cache
-from ..config import get_settings
+from ..cache import DataCache, cache
+from ..cache import cache as global_cache
+from ..config import Settings, get_settings
 from .data_provider import DataProvider
 
 logger = logging.getLogger(__name__)
@@ -36,9 +37,16 @@ warnings.warn(
 class DatabaseDataProvider(DataProvider):
     """Load DIC data from PostgreSQL DB + Django API."""
 
-    def __init__(self):
-        self.settings = settings
-        self._data_cache: dict[str, dict] | None = None
+    def __init__(
+        self, cache: DataCache | None = None, settings: Settings | None = None
+    ):
+        """Initialize the file-backed provider."""
+
+        # use provided settings or global
+        self.settings = settings if settings is not None else get_settings()
+
+        # allow cache injection; default to module-level global cache for backwards compat
+        self._cache = cache if cache is not None else global_cache
 
     # -------------------------
     # Utility: DB connection

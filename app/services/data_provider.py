@@ -23,11 +23,11 @@ def get_data_provider(settings: Settings | None = None) -> DataProvider:
     if settings.use_database:
         from .db_loader import DatabaseDataProvider
 
-        return DatabaseDataProvider()
+        return DatabaseDataProvider(settings=settings)
     else:
         from .file_loader import FileDataProvider
 
-        return FileDataProvider()
+        return FileDataProvider(settings=settings)
 
 
 @runtime_checkable

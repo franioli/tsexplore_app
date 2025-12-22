@@ -35,6 +35,12 @@
       letter-spacing: 0.5px;
     }
 
+    #upper,
+    #lower {
+      width: 100%;
+      height: 45vh;
+    }
+
     .controls-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -64,6 +70,56 @@
       font-size: 12px;
       color: #6c757d;
       font-weight: 500;
+    }
+
+    .runtime-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      gap: 8px;
+      align-items: start;
+    }
+
+    /* Make the label and the helper text occupy the full row */
+    .runtime-grid>.control-label,
+    .runtime-grid>.runtime-help {
+      grid-column: 1 / -1;
+    }
+
+    .runtime-grid-cols {
+      display: grid;
+      gap: 8px;
+    }
+
+    .runtime-grid-cols input {
+      width: 100%;
+    }
+
+    .checkbox-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 6px 10px;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid #ced4da;
+    }
+
+    .checkbox-group label {
+      font-size: 13px;
+      color: #495057;
+      cursor: pointer;
+      margin: 0;
+    }
+
+
+    .section-divider {
+      height: 8px;
+      background: linear-gradient(to bottom, #dee2e6, #f8f9fa);
     }
 
     input,
@@ -99,39 +155,6 @@
       background: #6c757d;
     }
 
-    .checkbox-group {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-    }
-
-    .checkbox-group input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      margin: 0;
-      padding: 0;
-      border: 1px solid #ced4da;
-    }
-
-    .checkbox-group label {
-      font-size: 13px;
-      color: #495057;
-      cursor: pointer;
-      margin: 0;
-    }
-
-    #upper,
-    #lower {
-      width: 100%;
-      height: 45vh;
-    }
-
-    .section-divider {
-      height: 8px;
-      background: linear-gradient(to bottom, #dee2e6, #f8f9fa);
-    }
-
     /* Style disabled dates differently */
     .flatpickr-day.flatpickr-disabled {
       color: #ccc !important;
@@ -148,7 +171,7 @@
 <body>
   <!-- Data Loading -->
   <div class="panel">
-    <div class="panel-title">DIC Data Loading</div>
+    <div class="panel-title">Data Loading</div>
 
     <!-- Load controls -->
     <div class="controls-grid controls-grid--load">
@@ -171,42 +194,47 @@
         </div>
       </div>
 
-      <!-- DIC interval selection -->
-      <div class="control-group">
-        <label class="control-label">DIC interval (dt)</label>
-        <select id="dt-mode">
-          <option value="auto" selected>Auto</option>
-          <option value="exact">Exact dt (days)</option>
-          <option value="closest">Closest dt (days) within tolerance</option>
-          <option value="all">All dt (plot every available interval)</option>
-        </select>
-        <div class="dt-row">
-          <input type="number" id="dt-days" step="1" min="0" placeholder="dt days" style="width: 110px;" disabled />
-          <input type="number" id="dt-tolerance" step="1" min="0" placeholder="± tol" style="width: 90px;" disabled />
+      <!-- runtime config overrides -->
+      <div class="runtime-grid">
+        <label class="control-label">Runtime Config Overrides</label>
+
+        <div class="runtime-grid-cols">
+          <input id="data-dir" placeholder="data directory (e.g. ./data/day_dic)"
+            title="Set data directory for this load (overrides config.yaml)" />
+          <input id="file-search-pattern" placeholder="file search pattern (e.g. *.txt)"
+            title="Glob pattern to find dic files (overrides config.yaml)" />
         </div>
-        <div style="font-size:12px;color:#6c757d;">
-          Use <code>Auto</code> or request a specific interval. Tolerance is used only for “Closest”.
+
+        <div class="runtime-grid-cols">
+          <input id="load-dt-days" placeholder="dt_days (e.g. 1 or 1,3,5)"
+            title="Preferred dt_days (single int or comma-separated list). Overrides config.yaml" />
+          <input id="load-dt-hours-tolerance" type="number" placeholder="dt_hours_tolerance (hours)"
+            title="Allowed hourly tolerance when filtering dt_days (overrides config.yaml)" />
+        </div>
+
+        <div class="runtime-grid-cols">
+          <input id="filename-date-template" placeholder="day_dic_{final:%Y-%m-%d}_{initial:%Y-%m-%d}_*"
+            title="Template to extract dates from filename (overrides config.yaml)" />
+          <input id="background-image" placeholder="background image path (optional)"
+            title="Path to background image file to use in plots (overrides config.yaml)" />
+        </div>
+        <div class="runtime-help" style="font-size:12px;color:#6c757d;">
+          <select name="" id=""></select>Use these fields to override settings.
         </div>
       </div>
 
-      <!-- use velocity botton -->
+      <!-- Flags -->
       <div class="control-group" style="align-items:flex-start;">
-        <label class="control-label">Use Velocity</label>
+        <label class="control-label">Flags</label>
         <div class="checkbox-group">
+          
+          <!-- use velocity botton -->
           <input type="checkbox" id="use-velocity" checked>
           <label for="use-velocity">px/day (instead of px)</label>
-        </div>
-      </div>
 
-      <!-- Invert y button - currently disabled as not yet implemented -->
-      <div class="control-group" style="align-items:flex-start;">
-        <label class="control-label">Invert Y axis</label>
-        <div class="checkbox-group">
+          <!-- Invert y button - currently disabled as not yet implemented -->
           <input type="checkbox" id="invert-y" disabled {{ 'checked' if invert_y else '' }}>
           <label for="invert-y">Invert Y axis in plots (North up)</label>
-        </div>
-        <div style="font-size:12px;color:#6c757d;">
-          Button not yet implemented.
         </div>
       </div>
 

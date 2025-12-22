@@ -109,7 +109,23 @@ async function startLoad() {
   if (startDate) url.searchParams.set("start_date", startDate);
   if (endDate) url.searchParams.set("end_date", endDate);
 
-  console.info("Requesting load", { startDate, endDate, url: url.toString() });
+  // Optional runtime overrides (only include when provided)
+  const dataDir = valueOf("data-dir", null);
+  const filePattern = valueOf("file-search-pattern", null);
+  const filenameTemplate = valueOf("filename-date-template", null);
+  const bgImage = valueOf("background-image", null);
+  const dtDays = valueOf("load-dt-days", null);
+  const dtHoursTol = valueOf("load-dt-hours-tolerance", null);
+  const invertY = checkedOf("invert-y", false);
+  if (dataDir) url.searchParams.set("data_dir", dataDir);
+  if (filePattern) url.searchParams.set("file_search_pattern", filePattern);
+  if (filenameTemplate) url.searchParams.set("filename_date_template", filenameTemplate);
+  if (bgImage) url.searchParams.set("background_image", bgImage);
+  if (dtDays) url.searchParams.set("dt_days", dtDays);
+  if (dtHoursTol) url.searchParams.set("dt_hours_tolerance", dtHoursTol);
+  if (invertY !== null) url.searchParams.set("invert_y", String(invertY));
+
+  console.info("Requesting load", { startDate, endDate, dataDir, filePattern, filenameTemplate, dtDays, dtHoursTol, url: url.toString() });
 
   const res = await fetch(url.toString(), { method: "POST" });
   if (!res.ok) {
