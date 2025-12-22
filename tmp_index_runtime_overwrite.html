@@ -1,0 +1,565 @@
+{# Jinja2 Template #}
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>PPCX TS APP</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        .panel {
+            padding: 8px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .panel-title {
+            font-weight: 600;
+            font-size: 14px;
+            color: #495057;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #upper,
+        #lower {
+            width: 100%;
+            height: 45vh;
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .controls-grid--load {
+            gap: 0px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .load-range-row,
+        .dt-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .control-label {
+            font-size: 12px;
+            color: #6c757d;
+            font-weight: 500;
+        }
+
+        .runtime-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(160px, 1fr));
+            gap: 8px;
+            align-items: start;
+        }
+
+        /* Make the label and the helper text occupy the full row */
+        .runtime-grid>.control-label,
+        .runtime-grid>.runtime-help {
+            grid-column: 1 / -1;
+        }
+
+        .runtime-grid-cols {
+            display: grid;
+            gap: 8px;
+        }
+
+        .runtime-grid-cols input {
+            width: 100%;
+        }
+
+        .checkbox-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 6px 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            padding: 0;
+            border: 1px solid #ced4da;
+        }
+
+        .checkbox-group label {
+            font-size: 13px;
+            color: #495057;
+            cursor: pointer;
+            margin: 0;
+        }
+
+
+        .section-divider {
+            height: 8px;
+            background: linear-gradient(to bottom, #dee2e6, #f8f9fa);
+        }
+
+        input,
+        select,
+        button {
+            padding: 6px 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        /* Visual style for the download button when "disabled" (still clickable so we can show an alert) */
+        button.is-disabled {
+            background: #6c757d;
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        button.is-disabled:hover {
+            background: #6c757d;
+        }
+
+        /* Style disabled dates differently */
+        .flatpickr-day.flatpickr-disabled {
+            color: #ccc !important;
+            cursor: not-allowed;
+        }
+
+        /* Keep enabled dates bold (optional) */
+        .flatpickr-day:not(.flatpickr-disabled) {
+            font-weight: 600;
+        }
+
+        /* Data load panel: two column layout: left = date/status/flags, right = runtime overrides */
+        .controls-grid--load {
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        /* Make runtime overrides compact: two columns, inputs full width */
+        .runtime-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(140px, 1fr));
+            gap: 8px;
+            align-items: start;
+        }
+
+        .runtime-grid>.control-label,
+        .runtime-grid>.runtime-help {
+            grid-column: 1 / -1;
+        }
+
+        .runtime-grid-cols {
+            display: contents;
+            /* let each input occupy one grid cell in the 2-column layout */
+        }
+
+        .runtime-grid input {
+            width: 100%;
+        }
+
+        /* Load button and status alignment */
+        .load-range-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .load-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .load-actions .btn-load {
+            padding: 8px 14px;
+            min-width: 86px;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Data Loading -->
+    <div class="panel">
+        <div class="panel-title">Data Loading</div>
+
+        <!-- Load controls -->
+        <div class="controls-grid controls-grid--load">
+            <!-- LEFT column: Date + status + flags -->
+            <div class="control-group">
+                <label class="control-label">Date range</label>
+                <div class="load-range-row">
+                    <input type="text" id="load-start-picker" placeholder="Start date"
+                        style="flex:1 1 140px; min-width:120px;" />
+                    <input type="text" id="load-end-picker" placeholder="End date"
+                        style="flex:1 1 140px; min-width:120px;" />
+                    <div class="load-actions">
+                        <button id="load-data" class="btn-load" title="Load data for the selected range">Load</button>
+                    </div>
+                </div>
+
+                <label class="control-label">Load status</label>
+                <progress id="load-progress" value="0" max="100" style="width:100%; display:none;"></progress>
+                <div id="load-status" style="font-size:12px;color:#6c757d;"></div>
+                <div id="no-data-hint" style="font-size:12px;color:#6c757d; display:none;">
+                    No data loaded yet. Use <b>Load</b> to import files / query DB.
+                </div>
+
+                <label class="control-label" style="margin-top:8px;">Flags</label>
+                <div class="checkbox-group" style="display:flex; flex-direction:column; gap:8px;">
+                    <label><input type="checkbox" id="use-velocity" checked> px/day (instead of px)</label>
+                    <label><input type="checkbox" id="invert-y" disabled {{ 'checked' if invert_y else '' }}> Invert Y
+                        axis in
+                        plots (North up)</label>
+                    <label>Node search radius (px)<input type="number" id="radius" value="10" step="1"
+                            style="width:100px; margin-left:8px;" /></label>
+                </div>
+            </div>
+
+            <!-- RIGHT column: Runtime overrides (compact 2-column grid) -->
+            <div class="runtime-grid">
+                <label class="control-label">Runtime Config Overrides</label>
+                <div class="runtime-grid-cols">
+                    <input id="data-dir" placeholder="data directory (e.g. ./data/day_dic)"
+                        title="Set data directory for this load (overrides config.yaml)" />
+                    <input id="file-search-pattern" placeholder="file search pattern (e.g. *.txt)"
+                        title="Glob pattern to find dic files (overrides config.yaml)" />
+                </div>
+                <div class="runtime-grid-cols">
+                    <input id="load-dt-days" placeholder="dt_days (e.g. 1 or 1,3,5)"
+                        title="Preferred dt_days (single int or comma-separated list). Overrides config.yaml" />
+                    <input id="load-dt-hours-tolerance" type="number" placeholder="dt_hours_tolerance (hours)"
+                        title="Allowed hourly tolerance when filtering dt_days (overrides config.yaml)" />
+                </div>
+                <div class="runtime-grid-cols">
+                    <input id="filename-date-template" placeholder="day_dic_{final:%Y-%m-%d}_{initial:%Y-%m-%d}_*"
+                        title="Template to extract dates from filename (overrides config.yaml)" />
+                    <input id="background-image" placeholder="background image path (optional)"
+                        title="Path to background image file to use in plots (overrides config.yaml)" />
+                </div>
+                <div class="runtime-help" style="font-size:12px;color:#6c757d;">
+                    Use these fields to override settings for this load (not persisted).
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Velocity Field Controls -->
+    <div class="panel">
+        <div class="panel-title">Velocity Field</div>
+        <div class="controls-grid">
+
+            <div class="control-group">
+                <label class="control-label">Select Reference Date</label>
+                <div style="display:flex; gap:8px; align-items:center; width:100%;">
+                    <button id="prev-date" style="padding:6px 12px; height:36px; min-width:44px; flex:0 0 auto;"
+                        title="Previous date">◀</button>
+                    <input type="text" id="date-picker" placeholder="Select date..."
+                        style="flex:1 1 0; min-width:120px;" />
+                    <button id="next-date" style="padding:6px 12px; height:36px; min-width:44px; flex:0 0 auto;"
+                        title="Next date">▶</button>
+                </div>
+                <div style="font-size:12px;color:#6c757d;">
+                    Reference date = <b>final</b> DIC date.
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label">Plot Type</label>
+                <select id="plot-type">
+                    <option value="scatter" selected>Scatter</option>
+                    <option value="raster">Heatmap</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label class="control-label">Colorscale</label>
+                <select id="colorscale">
+                    <option>Reds</option>
+                    <option>Viridis</option>
+                    <option>Plasma</option>
+                    <option>Blues</option>
+                    <option>RdYlBu</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label class="control-label">V Min</label>
+                <input type="number" id="cmin" step="0.1" value="0.5" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">V Max</label>
+                <input type="number" id="cmax" step="0.1" placeholder="Auto" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Marker Size</label>
+                <input type="number" id="marker-size" value="6" min="2" max="20" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Marker Opacity</label>
+                <!-- allow "auto" OR a numeric value -->
+                <input type="text" id="marker-opacity" value="auto" placeholder="auto or 0..1" inputmode="decimal"
+                    autocomplete="off" list="marker-opacity-options" />
+                <datalist id="marker-opacity-options">
+                    <option value="auto"></option>
+                    <option value="0.1"></option>
+                    <option value="0.2"></option>
+                    <option value="0.3"></option>
+                    <option value="0.5"></option>
+                    <option value="0.7"></option>
+                    <option value="1.0"></option>
+                </datalist>
+
+                <div style="font-size:12px;color:#6c757d;">
+                    Use <code>auto</code> to fade low velocities, or set a fixed value in [0..1].
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Velocity Map div -->
+    <div class="section-divider"></div>
+    <div id="upper"></div>
+    <div class="section-divider"></div>
+
+    <!-- Time Series -->
+    <div class="panel">
+        <div class="panel-title">Time Series</div>
+        <div class="controls-grid">
+            <div class="control-group">
+                <label class="control-label">Components</label>
+                <select id="components" multiple size="1">
+                    <option value="u">u (East)</option>
+                    <option value="v">v (North)</option>
+                    <option value="V" selected>|v| (Magnitude)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label class="control-label">Marker Mode</label>
+                <select id="marker-mode">
+                    <option value="markers" selected>Markers Only</option>
+                    <option value="lines">Lines Only</option>
+                    <option value="lines+markers">Lines Markers</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label class="control-label">Date Min</label>
+                <input type="text" id="xmin-date-picker" placeholder="All" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Date Max</label>
+                <input type="text" id="xmax-date-picker" placeholder="All" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Y Min</label>
+                <input type="number" id="ymin" step="0.1" placeholder="Auto" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Y Max</label>
+                <input type="number" id="ymax" step="0.1" placeholder="Auto" />
+            </div>
+            <div class="control-group">
+                <label class="control-label">Show error band</label>
+                <div class="checkbox-group">
+                    <input type="checkbox" id="error-band" checked>
+                    <label for="error-band">Ensambed mad</label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Inversion Controls -->
+    <div class="panel">
+        <div class="panel-title">Time Series Inversion</div>
+        <div class="controls-grid">
+            <div class="control-group">
+                <label class="control-label">Weight method</label>
+                <select id="inv-weight-method" title="Weight method" style="min-width:130px;">
+                    <option value="residuals">Residuals</option>
+                    <option value="charrier">Charrier</option>
+                    <option value="variable" selected>Variable (ensemble MAD)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label">Regularization</label>
+                <select id="inv-regularization-method" title="Regularization method" style="min-width:130px;">
+                    <option value="laplacian" selected>Laplacian</option>
+                    <option value="tikhonov">Tikhonov</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label">Lambda scaling</label>
+                <input id="inv-lambda-scaling" type="number" step="1.0" value="10.0" title="Lambda scaling"
+                    style="width:90px;" />
+            </div>
+
+            <div class="control-group">
+                <label class="control-label">Iterates</label>
+                <input id="inv-iterates" type="number" step="1" min="1" value="10" title="Iterates"
+                    style="width:80px;" />
+            </div>
+
+            <div class="control-group" style="display:flex; align-items:center;">
+                <label style="display:flex;align-items:center;gap:6px;">
+                    <input id="inv-refresh-plot" type="checkbox"
+                        title="Refresh timeseries plot before running inversion" checked />
+                    <span style="font-size:0.9em">Refresh plot before inversion</span>
+                </label>
+            </div>
+
+            <div class="control-group" style="justify-content:flex-end; align-items:center;">
+                <button id="ts-inversion" class="is-disabled" style="min-width:140px;" disabled
+                    title="Select a node to enable">Run TS
+                    inversion</button>
+                <button id="ts-inversion-download" class="is-disabled" style="min-width:140px;"
+                    title="Run an inversion first to enable download">Download inversion</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Time Series div -->
+    <div class="section-divider"></div>
+    <div id="lower"></div>
+
+    <script>
+        // Date sets provided by the backend (available for load / already loaded)
+        const availableDatesIso = {{ available_dates_iso | tojson | safe }};
+        const loadedDatesIso = {{ loaded_dates_iso | tojson | safe }};
+
+        // Update the current selection and trigger redraw (store ISO only)
+        const updateCurrentReference = (iso) => {
+            if (window.currentDate !== iso) {
+                window.currentDate = iso;
+                window.selectedNode = null;
+                if (typeof fetchVelocityMap === "function") {
+                    fetchVelocityMap();
+                }
+            }
+        };
+
+        // Configure load-range pickers (only use available dates, ISO format)
+        flatpickr("#load-start-picker", {
+            enable: availableDatesIso,
+            dateFormat: "Y-m-d",
+            allowInput: true,
+            disableMobile: true,
+            defaultDate: availableDatesIso[0] ?? null,
+        });
+
+        flatpickr("#load-end-picker", {
+            enable: availableDatesIso,
+            dateFormat: "Y-m-d",
+            allowInput: true,
+            disableMobile: true,
+            defaultDate: availableDatesIso.at(-1) ?? null,
+        });
+
+        // Initialize the main date picker only once we have loaded dates
+        const initLoadedPicker = () => {
+            if (loadedDatesIso.length === 0) {
+                ["#date-picker", "#prev-date", "#next-date"].forEach((selector) => {
+                    const node = document.querySelector(selector);
+                    if (node) {
+                        node.disabled = true;
+                    }
+                });
+                return;
+            }
+
+            // Main date picker for reference date selection (ISO only)
+            const firstIso = loadedDatesIso[0];
+            const lastIso = loadedDatesIso.at(-1);
+            const picker = flatpickr("#date-picker", {
+                enable: loadedDatesIso,
+                dateFormat: "Y-m-d",
+                defaultDate: firstIso,
+                disableMobile: true,
+                onChange(_selectedDates, dateStr) {
+                    const isoDate = dateStr; // already "YYYY-MM-DD"
+                    if (loadedDatesIso.includes(isoDate)) {
+                        updateCurrentReference(isoDate);
+                    }
+                },
+            });
+
+            // set current date to first loaded (ISO)
+            window.currentDate = firstIso;
+
+            // Previous / Next buttons
+            const changeOffset = (offset) => {
+                const activeIso = loadedDatesIso.find((iso) => iso === window.currentDate) ?? firstIso;
+                const idx = loadedDatesIso.indexOf(activeIso);
+                const targetIso = loaded_dates_iso[idx + offset];
+                if (targetIso) {
+                    picker.setDate(targetIso, true);
+                    updateCurrentReference(targetIso);
+                }
+            };
+            document.getElementById("prev-date").addEventListener("click", () => changeOffset(-1));
+            document.getElementById("next-date").addEventListener("click", () => changeOffset(1));
+
+
+            // Time series x limit pickers (ISO)
+            flatpickr("#xmin-date-picker", {
+                enable: loadedDatesIso,
+                dateFormat: "Y-m-d",
+                allowInput: true,
+                disableMobile: true,
+                defaultDate: firstIso,
+            });
+
+            flatpickr("#xmax-date-picker", {
+                enable: loadedDatesIso,
+                dateFormat: "Y-m-d",
+                allowInput: true,
+                disableMobile: true,
+                defaultDate: lastIso,
+            });
+        };
+
+        initLoadedPicker();
+    </script>
+
+    <script src="/static/app.js"></script>
+
+</body>
+
+</html>
