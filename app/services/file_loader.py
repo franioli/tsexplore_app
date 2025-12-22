@@ -449,7 +449,7 @@ def _parse_filename(
 
         groups = list(m.groups())
         vals: dict[str, datetime] = {}
-        for (ph, fmt), val in zip(placeholders, groups):
+        for (ph, fmt), val in zip(placeholders, groups, strict=False):
             vals[ph] = datetime.strptime(val, fmt)
 
         if "final" not in vals or "initial" not in vals:
@@ -533,11 +533,15 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
         ds.read_direct(out)
         return out
 
+    logger.debug(f"Reading HDF5 file: {file_path}")
+
     with h5py.File(file_path, "r") as f:
         # pick ensemble group or first pair group
         if "ensemble" in f:
+            logger.debug("Using 'ensemble' group")
             g = f["ensemble"]
         else:
+            logger.debug("Ensemble group not found, using first data group")
             groups = [k for k in f.keys() if isinstance(f[k], h5py.Group)]
             if not groups:
                 raise ValueError("HDF5 file contains no data groups")
@@ -583,6 +587,7 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
             additionals["ensemble_mad"] = mad
         else:
             additionals["ensemble_mad"] = np.full((n_nodes,), np.nan, dtype=np.float32)
+            logger.debug("No ensemble_mad/mad found, filling with NaNs")
 
         if "corr" in g:
             corr = _read_ds(g, "corr", dtype=np.float32, shape=(n_nodes,))
@@ -593,9 +598,8 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
             v_arr = np.asarray(v, dtype=np.float32).ravel()[:n_nodes]
             additionals[k] = v_arr
 
-        print(f"file: {file_path.name}")
-        print(additionals["ensemble_mad"])
-        print("-----")
+        logger.debug(additionals["ensemble_mad"])
+        logger.debug("-----")
 
     data = {
         "x": x,
