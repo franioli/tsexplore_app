@@ -1,7 +1,20 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class PlotlyFigure(BaseModel):
+    """Simple wrapper for Plotly figure dictionaries."""
+
+    fig: dict = Field(..., description="Plotly figure as dict")
+
+
+# =============================================================
+# === Velocity map models =====
+# =============================================================
 
 
 class VelocityMapRequest(BaseModel):
@@ -32,12 +45,6 @@ class VelocityMapRequest(BaseModel):
             raise ValueError("Date must be in YYYY-MM-DD format") from e
 
 
-class PlotlyFigure(BaseModel):
-    """Simple wrapper for Plotly figure dictionaries."""
-
-    fig: dict = Field(..., description="Plotly figure as dict")
-
-
 class VelocityMapResponse(BaseModel):
     """Response model for /map endpoints."""
 
@@ -47,6 +54,11 @@ class VelocityMapResponse(BaseModel):
     n_points: int | None = None
     figure: dict | None = None  # plotly fig dict
     meta: dict | None = None
+
+
+# =============================================================
+# === Time series models =====
+# =============================================================
 
 
 class TimeSeriesRequest(BaseModel):
@@ -85,15 +97,6 @@ class TimeSeriesPoint(BaseModel):
     u_std: float | None = None
     v_std: float | None = None
     V_std: float | None = None
-
-
-class InversionResult(BaseModel):
-    """Compact inversion result bundle for a node."""
-
-    dates_inv: list[str]  # YYYYMMDD
-    EW_hat: list[float]
-    NS_hat: list[float]
-    V_inv: list[float]
 
 
 class TimeSeriesResponse(BaseModel):
@@ -146,6 +149,11 @@ class NearestNodeResponse(BaseModel):
     y: float
 
 
+# =============================================================
+# === Inversion models =====
+# =============================================================
+
+
 class InversionConfig(BaseModel):
     """Configuration for time series inversion."""
 
@@ -153,6 +161,44 @@ class InversionConfig(BaseModel):
     regularization_method: Literal["laplacian", "none"] = "laplacian"
     lambda_scaling: float | Literal["auto_std", "auto_mad"] = 1.0
     iterates: int = Field(10, ge=1, le=100, description="Max iterations")
+
+
+class InversionResult(BaseModel):
+    """Compact inversion result bundle for a node."""
+
+    dates_inv: list[str]  # YYYYMMDD
+    EW_hat: list[float]
+    NS_hat: list[float]
+    V_inv: list[float]
+
+
+class NodeInversionModel(BaseModel):
+    dates: list[str]
+    V_hat: list[float] | None = None
+    EW_hat: list[float] | None = None
+    NS_hat: list[float] | None = None
+
+
+class TraceRequest(BaseModel):
+    node_inversion: NodeInversionModel
+    refresh_plot: bool = False
+    name: str | None = None
+    overlay_color: str | None = None
+    mode: str = "lines+markers"
+    marker_symbol: str = "diamond"
+    used_colors: list[str] | None = None
+
+
+class SaveInversionRequest(BaseModel):
+    node_inversion: NodeInversionModel
+    node_x: float
+    node_y: float
+    filename: str | None = None
+
+
+# =============================================================
+# === Other models =====
+# =============================================================
 
 
 class HealthCheckResponse(BaseModel):

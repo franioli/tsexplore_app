@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ..cache import cache
 from ..config import get_logger, get_settings
-from ..models.types import NearestNodeResponse
+from ..models import NearestNodeResponse
 from ..services.spatial import nearest_node as find_nearest_node
 
 logger = get_logger()

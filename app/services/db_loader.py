@@ -9,6 +9,7 @@ with at least 'points' and 'vectors'/'magnitudes'.
 """
 
 import logging
+import warnings
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -24,6 +25,12 @@ from .data_provider import DataProvider
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+warnings.warn(
+    "DatabaseDataProvider is at a deprecated state and may not work as expected.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 
 class DatabaseDataProvider(DataProvider):

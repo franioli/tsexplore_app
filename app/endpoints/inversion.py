@@ -1,9 +1,10 @@
 import numpy as np
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..cache import cache
 from ..config import get_logger, get_settings
+from ..models import SaveInversionRequest, TraceRequest
 from ..services.data_provider import get_data_provider
 from ..services.inversion import invert_node
 
@@ -95,6 +96,36 @@ def _compute_charrier_weights(
     return (weights / s).astype(np.float32)
 
 
+def _pick_unused_color(
+    used_colors: list[str] | None, palette: list[str] | None = None
+) -> str:
+    """Pick a color from palette that is not present in used_colors.
+    If none available, generate a random hex color.
+    """
+    import random
+
+    if palette is None:
+        # a sensible palette (Plotly default-ish)
+        palette = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+        ]
+    used_set = {c.strip().lower() for c in (used_colors or []) if isinstance(c, str)}
+    candidates = [c for c in palette if c.lower() not in used_set]
+    if candidates:
+        return random.choice(candidates)
+    # fallback: random hex
+    return f"#{random.getrandbits(24):06x}"
+
+
 @router.post(
     "/inversion/run",
     summary="Run time-series inversion (node series provided)",
@@ -107,6 +138,13 @@ async def run_node_inversion(
     regularization_method: str = Body("laplacian", description="Regularization method"),
     lambda_scaling: float = Body(..., description="Scaling for lambda"),
     iterates: int = Body(10, ge=1, description="Number of inversion iterations"),
+    date_min: str | None = Body(
+        None, description="Optional minimum date filter (YYYY-MM-DD)"
+    ),
+    date_max: str | None = Body(
+        None,
+        description="Optional maximum date filter (YYYY-MM-DD)",
+    ),
 ):
     """
     Run time-series inversion on provided time-series data.
@@ -120,6 +158,7 @@ async def run_node_inversion(
         )
 
     logger.info(f"Performing inversion for node at ({node_x}, {node_y})")
+    logger.debug(f"Inversion request date_min={date_min} date_max={date_max}")
 
     try:
         logger.info("Fetching time series data")
@@ -132,18 +171,36 @@ async def run_node_inversion(
         if not ts_data:
             raise ValueError("No time-series data available for the requested node")
 
-        # extract the single (ungrouped) timeseries group
-        # provider returns {0: {...}} when group_by_dt=False, but handle generic case
-        n_obs = ts_data["dx"].shape[0]
-        if n_obs < 1:
-            raise ValueError("Not enough observations for inversion")
-
-        # Build EW/NS series (displacements) and timestamp array (n_obs, 2)
-        ew = np.asarray(ts_data["dx"], dtype=np.float32)
-        ns = np.asarray(ts_data["dy"], dtype=np.float32)
-
+        # Unpack data arrays
         final_dates = np.asarray(ts_data["final_dates"], dtype="datetime64[D]")
         initial_dates = np.asarray(ts_data["initial_dates"], dtype="datetime64[D]")
+
+        # Build EW/NS series (displacements) and timestamp array (n_obs, 2)
+        dx = np.asarray(ts_data["dx"], dtype=np.float32)
+        dy = np.asarray(ts_data["dy"], dtype=np.float32)
+
+        # extract the timeseries within optional date range
+        if date_min or date_max:
+            logger.info(
+                f"Applying date filter: min={date_min or 'none'}, max={date_max or 'none'}"
+            )
+            mask = np.ones(final_dates.shape[0], dtype=bool)
+            if date_min:
+                date_min_dt = np.datetime64(date_min, "D")
+                mask &= final_dates >= date_min_dt
+            if date_max:
+                date_max_dt = np.datetime64(date_max, "D")
+                mask &= final_dates <= date_max_dt
+
+            # Apply mask to all arrays
+            dx = dx[mask]
+            dy = dy[mask]
+            final_dates = final_dates[mask]
+            initial_dates = initial_dates[mask]
+
+        n_obs = dx.shape[0]
+        if n_obs < 1:
+            raise ValueError("Not enough observations for inversion")
 
         if final_dates.shape[0] != n_obs or initial_dates.shape[0] != n_obs:
             raise ValueError("Inconsistent date arrays in timeseries data")
@@ -170,8 +227,8 @@ async def run_node_inversion(
                 cache=cache,
                 node_x=node_x,
                 node_y=node_y,
-                ew=ew,
-                ns=ns,
+                ew=dx,
+                ns=dy,
                 final_dates=final_dates,
                 timestamp=timestamp,
                 k=9,
@@ -195,8 +252,8 @@ async def run_node_inversion(
 
         logger.info("Data prepared (%d observations). Running inversion...", n_obs)
         res = invert_node(
-            ew_series=ew,
-            ns_series=ns,
+            ew_series=dx,
+            ns_series=dy,
             timestamp=timestamp,
             weight_method=weight_method,
             weight_variable=weight_var,
@@ -251,57 +308,6 @@ async def run_node_inversion(
         raise HTTPException(status_code=500, detail="inversion failure")
 
 
-# ...existing code...
-from pydantic import BaseModel
-
-
-class NodeInversionModel(BaseModel):
-    dates: list[str]
-    V_hat: list[float] | None = None
-    EW_hat: list[float] | None = None
-    NS_hat: list[float] | None = None
-
-
-class TraceRequest(BaseModel):
-    node_inversion: NodeInversionModel
-    refresh_plot: bool = False
-    name: str | None = None
-    overlay_color: str | None = None
-    mode: str = "lines+markers"
-    marker_symbol: str = "diamond"
-    used_colors: list[str] | None = None
-
-
-def _pick_unused_color(
-    used_colors: list[str] | None, palette: list[str] | None = None
-) -> str:
-    """Pick a color from palette that is not present in used_colors.
-    If none available, generate a random hex color.
-    """
-    import random
-
-    if palette is None:
-        # a sensible palette (Plotly default-ish)
-        palette = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-        ]
-    used_set = {c.strip().lower() for c in (used_colors or []) if isinstance(c, str)}
-    candidates = [c for c in palette if c.lower() not in used_set]
-    if candidates:
-        return random.choice(candidates)
-    # fallback: random hex
-    return f"#{random.getrandbits(24):06x}"
-
-
 @router.post(
     "/inversion/trace", summary="Build a plotly trace from node inversion output"
 )
@@ -345,105 +351,44 @@ async def build_inversion_trace(req: TraceRequest = Body(...)):
     return JSONResponse({"trace": trace})
 
 
-# ...existing code...
+@router.post("/inversion/save", summary="Save node inversion to a txt/csv file")
+async def save_inversion(req: SaveInversionRequest = Body(...)):
+    """Return a text file (attachment) containing the inversion results.
 
+    Format: CSV with header:
+      date,x,y,EW_hat,NS_hat,V_hat
+    One row per sample in node_inversion.dates. Missing components are left empty.
+    """
+    inv = req.node_inversion
+    dates = inv.dates or []
+    n = len(dates)
 
-# @router.post(
-#     "/inversion/run-from-files",
-#     summary="Run node inversion by extracting series from files (local data)",
-#     tags=["inversion"],
-# )
-# async def run_node_inversion_from_files(
-#     node_x: float = Body(..., description="Node X coordinate"),
-#     node_y: float = Body(..., description="Node Y coordinate"),
-#     iterates: int = Body(10, ge=1, description="Number of inversion iterations"),
-#     regularization_method: str = Body("laplacian", description="Regularization method"),
-#     lambda_scaling: float = Body(1.0, description="Scaling for lambda"),
-#     weight_method: str = Body("residuals", description="Weighting method"),
-# ):
-#     """
-#     Run node-level inversion by extracting ew/ns time-series for (node_x,node_y)
-#     from local files and running the inversion.
-#     """
-#     try:
-#         logger.info(f"Performing inversion for node at ({node_x}, {node_y})")
+    # basic consistency checks
+    if inv.EW_hat is not None and len(inv.EW_hat) != n:
+        raise HTTPException(status_code=400, detail="EW_hat length mismatch")
+    if inv.NS_hat is not None and len(inv.NS_hat) != n:
+        raise HTTPException(status_code=400, detail="NS_hat length mismatch")
+    if inv.V_hat is not None and len(inv.V_hat) != n:
+        raise HTTPException(status_code=400, detail="V_hat length mismatch")
 
-#         logger.info("Loading data...")
-#         provider = get_data_provider()
-#         tree, coords = build_kdtree(provider)
-#         dist, idx = tree.query([node_x, node_y], k=1)
-#         if not np.isfinite(dist):
-#             raise ValueError("node not found in KDTree")
-#         dic = load_dic_data(
-#             settings.data_dir,
-#             file_pattern=settings.file_search_pattern,
-#         )
-#         ew_series = dic["ew"][:, idx]
-#         ns_series = dic["ns"][:, idx]
-#         ens_mad = dic["weight"][:, idx] if "weight" in dic else None
-#         timestamp = dic["timestamp"]
+    lines = ["date,x,y,EW_hat,NS_hat,V_hat"]
+    for i, d in enumerate(dates):
+        ew = "" if inv.EW_hat is None else f"{float(inv.EW_hat[i]):.6g}"
+        ns = "" if inv.NS_hat is None else f"{float(inv.NS_hat[i]):.6g}"
+        if inv.V_hat is not None:
+            v = f"{float(inv.V_hat[i]):.6g}"
+        elif inv.EW_hat is not None and inv.NS_hat is not None:
+            v = f"{np.hypot(inv.EW_hat[i], inv.NS_hat[i]):.6g}"
+        else:
+            v = ""
+        lines.append(f"{d},{req.node_x},{req.node_y},{ew},{ns},{v}")
 
-#         # Ensure numpy arrays
-#         ew = np.asarray(ew_series)
-#         ns = np.asarray(ns_series)
-#         ts = np.asarray(timestamp)
-
-#         if ew.shape[0] != ns.shape[0] or ew.shape[0] != ts.shape[0]:
-#             raise ValueError("EW/NS/Timestamp arrays must have same length")
-
-#         logger.info("Data loaded. Running inversion...")
-#         res = invert_node(
-#             ew_series=ew,
-#             ns_series=ns,
-#             timestamp=ts,
-#             weight_method=weight_method,
-#             weight_variable=ens_mad,
-#             regularization_method=regularization_method,
-#             lambda_scaling=lambda_scaling,
-#             iterates=iterates,
-#         )
-
-#         # normalize numpy arrays to plain JSON-friendly lists
-#         try:
-#             ew_hat = np.asarray(res["EW_hat"]).tolist()
-#             ns_hat = np.asarray(res["NS_hat"]).tolist()
-#             # Time_hat may be numpy datetime; extract day-string per sample
-#             time_hat = np.asarray(res["Time_hat"])
-#             try:
-#                 dates_arr = time_hat[:, 1]
-#             except Exception:
-#                 dates_arr = time_hat
-#             dates = [str(d) for d in np.datetime_as_string(dates_arr, unit="D")]
-#             V_hat = (np.sqrt(np.array(ew_hat) ** 2 + np.array(ns_hat) ** 2)).tolist()
-#         except Exception:
-#             ew_hat = res.get("EW_hat")
-#             ns_hat = res.get("NS_hat")
-#             dates = res.get("Time_hat")
-#             V_hat = None
-
-#         logger.info("Inversion completed.")
-
-#         return JSONResponse(
-#             {
-#                 "status": "ok",
-#                 "node_inversion": {
-#                     "EW_hat": ew_hat,
-#                     "NS_hat": ns_hat,
-#                     "dates": dates,
-#                     "V_hat": V_hat,
-#                 },
-#             }
-#         )
-
-#     except HTTPException:
-#         raise
-#     except NotImplementedError as e:
-#         logger.warning("Inversion not supported: %s", e)
-#         raise HTTPException(status_code=400, detail=str(e)) from e
-#     except FileNotFoundError as e:
-#         raise HTTPException(status_code=404, detail=str(e)) from e
-#     except ValueError as e:
-#         raise HTTPException(status_code=400, detail=str(e)) from e
-#     except Exception as e:
-#         logger.exception("node inversion (from files) failed")
-#         raise HTTPException(status_code=500, detail=f"inversion failure: {e}") from e
+    content = "\n".join(lines) + "\n"
+    filename = (
+        req.filename or f"node_inversion_x{int(req.node_x)}_y{int(req.node_y)}.txt"
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    return Response(content=content.encode("utf-8"), headers=headers)

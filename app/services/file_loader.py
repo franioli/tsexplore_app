@@ -598,7 +598,9 @@ def _read_h5(file_path: Path, invert_y: bool) -> dict[str, np.ndarray]:
             v_arr = np.asarray(v, dtype=np.float32).ravel()[:n_nodes]
             additionals[k] = v_arr
 
-        logger.debug(additionals["ensemble_mad"])
+        logger.debug(f"Read {n_nodes} nodes from HDF5")
+        logger.debug(additionals.keys())
+        logger.debug("  " + str(additionals["ensemble_mad"]))
         logger.debug("-----")
 
     data = {

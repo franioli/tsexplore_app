@@ -88,6 +88,17 @@
       background: #0056b3;
     }
 
+    /* Visual style for the download button when "disabled" (still clickable so we can show an alert) */
+    button.is-disabled {
+      background: #6c757d;
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    button.is-disabled:hover {
+      background: #6c757d;
+    }
+
     .checkbox-group {
       display: flex;
       align-items: center;
@@ -326,32 +337,58 @@
           <label for="error-band">Ensambed mad</label>
         </div>
       </div>
+    </div>
+  </div>
 
-      <!-- Inversion controls -->
-      <div class="control-group" style="justify-content: flex-end;">
-        <label class="control-label">Time Series Inversion</label>
-        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-          <select id="inv-weight-method" title="Weight method" style="min-width:130px;">
-            <option value="residuals">Residuals</option>
-            <option value="charrier">Charrier</option>
-            <option value="variable" selected>Variable (use ensemble MAD) selected</option>
-          </select>
-          <!-- <select id="inv-regularization-method" title="Regularization method" style="min-width:130px;">
-            <option value="laplacian" selected>Laplacian</option>
-            <option value="tikhonov">Tikhonov</option>
-          </select> -->
-          <input id="inv-lambda-scaling" type="number" step="1.0" value="10.0" title="Lambda scaling"
-            style="width:90px;" />
-          <input id="inv-iterates" type="number" step="1" min="1" value="10" title="Iterates" style="width:80px;" />
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input id="inv-refresh-plot" type="checkbox" title="Refresh timeseries plot before running inversion"
-              checked />
-            <span style="font-size:0.9em">Refresh plot before inversion</span>
-          </label>
-          <button id="ts-inversion" style="margin-top: auto; min-width:120px;">Run TS inversion</button>
-        </div>
+  <!-- Inversion Controls -->
+  <div class="panel">
+    <div class="panel-title">Time Series Inversion</div>
+    <div class="controls-grid">
+      <div class="control-group">
+        <label class="control-label">Weight method</label>
+        <select id="inv-weight-method" title="Weight method" style="min-width:130px;">
+          <option value="residuals">Residuals</option>
+          <option value="charrier">Charrier</option>
+          <option value="variable" selected>Variable (ensemble MAD)</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Regularization</label>
+        <select id="inv-regularization-method" title="Regularization method" style="min-width:130px;">
+          <option value="laplacian" selected>Laplacian</option>
+          <option value="tikhonov">Tikhonov</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Lambda scaling</label>
+        <input id="inv-lambda-scaling" type="number" step="1.0" value="10.0" title="Lambda scaling"
+          style="width:90px;" />
+      </div>
+
+      <div class="control-group">
+        <label class="control-label">Iterates</label>
+        <input id="inv-iterates" type="number" step="1" min="1" value="10" title="Iterates" style="width:80px;" />
+      </div>
+
+      <div class="control-group" style="display:flex; align-items:center;">
+        <label style="display:flex;align-items:center;gap:6px;">
+          <input id="inv-refresh-plot" type="checkbox" title="Refresh timeseries plot before running inversion"
+            checked />
+          <span style="font-size:0.9em">Refresh plot before inversion</span>
+        </label>
+      </div>
+
+      <div class="control-group" style="justify-content:flex-end; align-items:center;">
+        <button id="ts-inversion" class="is-disabled" style="min-width:140px;" disabled
+          title="Select a node to enable">Run TS
+          inversion</button>
+        <button id="ts-inversion-download" class="is-disabled" style="min-width:140px;"
+          title="Run an inversion first to enable download">Download inversion</button>
       </div>
     </div>
+
   </div>
 
   <!-- Time Series div -->

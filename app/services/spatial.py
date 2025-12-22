@@ -6,8 +6,6 @@ This module provides:
   slave date via the active DataProvider, and returns values at the nearest node.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 
