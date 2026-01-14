@@ -2,8 +2,8 @@
 use_database: false
 
 # Data directory containing day_dic files
-# data_dir: ../ppcx_dic/output/2020/correlation/day_dic_ensemble_h5 #data/h5/ # data/day_dic/
-data_dir: ../ppcx_dic/output/2020/correlation/
+# data_dir: ../ppcx_dic/data/2020/correlation/day_dic_ensemble_h5 #data/h5/ # data/day_dic/
+data_dir: ../ppcx_dic/data/2020/correlation/
 
 # File glob pattern
 file_search_pattern: "*"

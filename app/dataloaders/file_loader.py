@@ -47,6 +47,15 @@ class FileDataProvider(DataProvider):
         # allow cache injection; default to module-level global cache for backwards compat
         self._cache = cache if cache is not None else global_cache
 
+        # Check for input files. Raise error if no valid files found.
+        data_path = Path(self.settings.data_dir)
+        files = list(data_path.glob(self.settings.file_search_pattern))
+        if not files:
+            raise FileNotFoundError(
+                f"No files found in {data_path} matching pattern {self.settings.file_search_pattern}"
+            )
+        logger.debug(f"Found {len(files)} files in {data_path}")
+
     def bind_cache(self, cache: DataCache):
         """Optional helper to set/replace the cache after construction."""
         self._cache = cache
@@ -63,21 +72,25 @@ class FileDataProvider(DataProvider):
         # Use glob to find files. The pattern might be just *.nc or *.h5
         files = data_path.glob(s.file_search_pattern)
 
-        # date patten in filenames
-        filename_date_template = getattr(s, "filename_date_template", None)
-
         dates: set[str] = set()
 
-        # Check for NetCDF files first
+        # == Prioritized check for NetCDF files first
         nc_files = [f for f in files if f.suffix == ".nc"]
-        for f in nc_files:
-            try:
-                nc_dates = _extract_dates_from_netcdf(f)
-                dates.update(nc_dates)
-            except Exception as e:
-                logger.warning(f"Error reading dates from NetCDF {f.name}: {e}")
+        if nc_files:
+            for f in nc_files:
+                try:
+                    nc_dates = _extract_dates_from_netcdf(f)
+                    dates.update(nc_dates)
+                except Exception as e:
+                    logger.warning(f"Error reading dates from NetCDF {f.name}: {e}")
 
-        # Check other files
+            return sorted(dates)
+
+        # == Check other files
+
+        # date pattern in filenames
+        filename_date_template = getattr(s, "filename_date_template", None)
+
         other_files = [f for f in files if f.suffix != ".nc"]
         for f in other_files:
             try:
@@ -90,8 +103,7 @@ class FileDataProvider(DataProvider):
                 logger.warning(f"Skipping file {f.name}: {e}")
                 continue
 
-        out = sorted(dates)
-        return out
+        return sorted(dates)
 
     def get_dic_data(
         self,
@@ -370,7 +382,9 @@ class FileDataProvider(DataProvider):
         }
 
 
-def _extract_dates_from_netcdf(file_path: Path) -> list[str]:
+def _extract_dates_from_netcdf(
+    file_path: Path, date_var_name: str = "date2"
+) -> list[str]:
     """Peek at a NetCDF file to get the list of final dates (slave dates)."""
     import xarray as xr
 
@@ -379,8 +393,8 @@ def _extract_dates_from_netcdf(file_path: Path) -> list[str]:
         # Use decode_times=True to get datetime objects immediately
         with xr.open_dataset(file_path, decode_times=True) as ds:
             # We assume reference date is 'date2' (slave) as per stack script
-            if "date2" in ds.coords or "date2" in ds.data_vars:
-                date2_vals = ds["date2"].values
+            if date_var_name in ds.coords or date_var_name in ds.data_vars:
+                date2_vals = ds[date_var_name].values
                 # Convert numpy datetime64 to strings
                 dates = [
                     np.datetime_as_string(d, unit="D")
@@ -1014,7 +1028,6 @@ def _load_data_to_cache(
         logger.warning(f"No files found matching {file_search_pattern} in {data_path}")
         return 0
     logger.info(f"Found {len(standard_files)} DIC files.")
-
 
     # Pre-filter files by parsing filenames and applying date / dt filters
     candidates: list[tuple[Path, datetime, datetime, int, int]] = []
