@@ -4,8 +4,8 @@ from fastapi.responses import JSONResponse, Response
 
 from ..cache import cache
 from ..config import get_logger, get_settings
+from ..dataloaders.data_provider import get_data_provider
 from ..models import SaveInversionRequest, TraceRequest
-from ..services.data_provider import get_data_provider
 from ..services.inversion import invert_node
 
 logger = get_logger()

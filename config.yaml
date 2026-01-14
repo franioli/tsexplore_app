@@ -2,12 +2,14 @@
 use_database: false
 
 # Data directory containing day_dic files
-data_dir: ../ppcx_dic/output/2020/correlation/day_dic_ensemble_h5 #data/h5/ # data/day_dic/
+# data_dir: ../ppcx_dic/output/2020/correlation/day_dic_ensemble_h5 #data/h5/ # data/day_dic/
+data_dir: ../ppcx_dic/output/2020/correlation/
 
 # File glob pattern
 file_search_pattern: "*"
+file_search_pattern: "*.nc"
 
-# Filename template to extract intiial and final dates from filenames.
+# Filename template to extract intiial and final dates from filenames (not used with NetCDF files that use internal metadata).
 # Template matches the file *stem* (filename without extension).
 # Use placeholders: {final:<strftime>} and {initial:<strftime>}.
 # Examples:

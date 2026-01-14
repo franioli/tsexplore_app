@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from ..config import Settings, get_logger
-from ..services import DataProvider, get_data_provider
+from ..dataloaders import DataProvider, get_data_provider
 
 logger = get_logger()
 

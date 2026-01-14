@@ -9,7 +9,7 @@ from PIL import Image
 
 from ..cache import cache
 from ..config import get_logger, get_settings
-from ..services.data_provider import get_data_provider
+from ..dataloaders.data_provider import get_data_provider
 from ..services.plots import make_velocity_map_figure
 
 logger = get_logger()

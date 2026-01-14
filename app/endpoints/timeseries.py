@@ -8,7 +8,7 @@ from plotly import graph_objs as go
 
 from ..cache import cache
 from ..config import get_logger, get_settings
-from ..services.data_provider import get_data_provider
+from ..dataloaders.data_provider import get_data_provider
 from ..services.plots import _format_metadata, _rgba_from_name
 
 logger = get_logger()

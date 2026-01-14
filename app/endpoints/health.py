@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 
 from ..cache import cache
 from ..config import get_logger
-from ..services.data_provider import get_data_provider as _get_provider
+from ..dataloaders.data_provider import get_data_provider as _get_provider
 
 logger = get_logger()
 router = APIRouter()

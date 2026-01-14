@@ -59,23 +59,31 @@ class FileDataProvider(DataProvider):
         """
         s = self.settings
         data_path = Path(s.data_dir)
+
+        # Use glob to find files. The pattern might be just *.nc or *.h5
         files = data_path.glob(s.file_search_pattern)
 
         # date patten in filenames
         filename_date_template = getattr(s, "filename_date_template", None)
 
-        # legacy args kept for compatibility
-        filename_pattern = getattr(s, "filename_pattern", None)
-        date_format = getattr(s, "date_format", None)
-
         dates: set[str] = set()
-        for f in files:
+
+        # Check for NetCDF files first
+        nc_files = [f for f in files if f.suffix == ".nc"]
+        for f in nc_files:
+            try:
+                nc_dates = _extract_dates_from_netcdf(f)
+                dates.update(nc_dates)
+            except Exception as e:
+                logger.warning(f"Error reading dates from NetCDF {f.name}: {e}")
+
+        # Check other files
+        other_files = [f for f in files if f.suffix != ".nc"]
+        for f in other_files:
             try:
                 final_date, _initial_date = _parse_filename(
                     f,
                     filename_date_template=filename_date_template,
-                    filename_pattern=filename_pattern,
-                    date_format=date_format,
                 )
                 dates.add(final_date.strftime("%Y-%m-%d"))
             except Exception as e:
@@ -136,6 +144,30 @@ class FileDataProvider(DataProvider):
             return None
         _meta, payload = rec
         return payload
+
+    def get_coordinates(self) -> np.ndarray:
+        """Get coordinate array from the first loaded record.
+
+        Returns:
+            (N, 2) array with columns [x, y].
+
+        Raises:
+            ValueError: If no data is available.
+        """
+        if not self._cache.is_loaded():
+            self.load_all()
+
+        if self._cache.num_records == 0:
+            raise ValueError("No data available")
+
+        # Pick the first record_id deterministically
+        first_id = sorted(self._cache.dic_records.keys())[0]
+        rec = self._cache.get_dic_record(first_id)
+        if rec is None:
+            raise ValueError("No data available")
+
+        _meta, payload = rec
+        return np.column_stack([payload["x"], payload["y"]])
 
     def load_all(self) -> int:
         """Load all DIC files from disk into the global cache.
@@ -216,30 +248,6 @@ class FileDataProvider(DataProvider):
             cache=self._cache,
         )
         return n
-
-    def get_coordinates(self) -> np.ndarray:
-        """Get coordinate array from the first loaded record.
-
-        Returns:
-            (N, 2) array with columns [x, y].
-
-        Raises:
-            ValueError: If no data is available.
-        """
-        if not self._cache.is_loaded():
-            self.load_all()
-
-        if self._cache.num_records == 0:
-            raise ValueError("No data available")
-
-        # Pick the first record_id deterministically
-        first_id = sorted(self._cache.dic_records.keys())[0]
-        rec = self._cache.get_dic_record(first_id)
-        if rec is None:
-            raise ValueError("No data available")
-
-        _meta, payload = rec
-        return np.column_stack([payload["x"], payload["y"]])
 
     def extract_node_timeseries(
         self,
@@ -360,6 +368,27 @@ class FileDataProvider(DataProvider):
                 [v if v is not None else np.nan for v in mad_list], dtype=np.float32
             )[order],
         }
+
+
+def _extract_dates_from_netcdf(file_path: Path) -> list[str]:
+    """Peek at a NetCDF file to get the list of final dates (slave dates)."""
+    import xarray as xr
+
+    dates = []
+    try:
+        # Use decode_times=True to get datetime objects immediately
+        with xr.open_dataset(file_path, decode_times=True) as ds:
+            # We assume reference date is 'date2' (slave) as per stack script
+            if "date2" in ds.coords or "date2" in ds.data_vars:
+                date2_vals = ds["date2"].values
+                # Convert numpy datetime64 to strings
+                dates = [
+                    np.datetime_as_string(d, unit="D")
+                    for d in np.atleast_1d(date2_vals)
+                ]
+    except Exception as e:
+        logger.error(f"Failed to read dates from {file_path}: {e}")
+    return dates
 
 
 @lru_cache(maxsize=64)
@@ -722,10 +751,194 @@ def _read_single_file(
     return meta, payload
 
 
+def _load_netcdf_cube_into_cache(
+    file_path: Path,
+    cache: DataCache,
+    invert_y: bool = False,
+    dt_days_filter: int | list[int] | None = None,
+    dt_hours_tolerance: int = 0,
+    reference_date_start: datetime | None = None,
+    reference_date_end: datetime | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+):
+    """Load records from a single NetCDF cube into the cache.
+
+    The NetCDF file is expected to have 'vx', 'vy', 'mad' variables and 'date1', 'date2', 'dt_days'.
+    It flattens the grid for each timestamp and ignores NaN entries to match sparse cache format.
+    """
+    import xarray as xr
+
+    logger.info(f"Loading NetCDF cube: {file_path}")
+
+    # We load the dataset. Chunks=None to load into memory or use Dask if installed,
+    # but here we iterate efficiently.
+    with xr.open_dataset(file_path, decode_times=True) as ds:
+        # Check global attributes for mode
+        mode = ds.attrs.get("obs_mode", "velocity")  # 'velocity' or 'displacement'
+
+        # Grid coordinates
+        xs = ds.x.values
+        ys = ds.y.values
+        X, Y = np.meshgrid(xs, ys)
+
+        # Flatten grid arrays once
+        X_flat = X.ravel().astype(np.float32)
+        Y_flat = Y.ravel().astype(np.float32)
+
+        if invert_y:
+            Y_flat = -Y_flat
+
+        # Identify time dimension (usually 'mid_date')
+        # However, date1/date2 might be data_vars or coords with same dim as mid_date
+        # We iterate over the 'mid_date' dimension size
+        if "mid_date" not in ds.dims:
+            logger.error("NetCDF file missing 'mid_date' dimension.")
+            return
+
+        num_steps = ds.dims["mid_date"]
+
+        # Pre-load time variables to avoid random access overhead
+        # Use .values to get numpy arrays (datetime64)
+        dates1 = ds["date1"].values
+        dates2 = ds["date2"].values
+        dts_days = ds["dt_days"].values
+
+        processed_count = 0
+
+        for i in tqdm(range(num_steps), desc="Reading NetCDF cube", unit="slice"):
+            # Extract metadata
+            # Convert datetime64[ns] to datetime object
+            date1_np = dates1[i]
+            date2_np = dates2[i]
+
+            # Safe conversion
+            ts_start = (
+                date1_np - np.datetime64("1970-01-01T00:00:00Z")
+            ) / np.timedelta64(1, "s")
+            ts_end = (
+                date2_np - np.datetime64("1970-01-01T00:00:00Z")
+            ) / np.timedelta64(1, "s")
+            initial_date_ = datetime.utcfromtimestamp(ts_start)
+            final_date_ = datetime.utcfromtimestamp(ts_end)
+
+            # --- Filters ---
+            if (
+                reference_date_start
+                and final_date_.date() < reference_date_start.date()
+            ):
+                continue
+            if reference_date_end and final_date_.date() > reference_date_end.date():
+                continue
+
+            dt_days_val = float(dts_days[i])
+            dt_hours = dt_days_val * 24.0
+
+            if dt_days_filter is not None:
+                filter_list = (
+                    tuple(dt_days_filter)
+                    if isinstance(dt_days_filter, list)
+                    else (int(dt_days_filter),)
+                )
+                matched = False
+                for ft in filter_list:
+                    target_hours = ft * 24.0
+                    if abs(dt_hours - target_hours) <= dt_hours_tolerance:
+                        matched = True
+                        break
+                if not matched:
+                    continue
+
+            # --- Extract Data Slice ---
+            # Slice the i-th step. .values loads it.
+            # Variables are likely (mid_date, y, x)
+            vx_slice = ds["vx"].isel(mid_date=i).values.ravel()
+            vy_slice = ds["vy"].isel(mid_date=i).values.ravel()
+
+            if "mad" in ds:
+                mad_slice = ds["mad"].isel(mid_date=i).values.ravel()
+            else:
+                mad_slice = np.full_like(vx_slice, np.nan)
+
+            # Filter NaNs (valid mask)
+            # We assume vx and vy have NaNs in the same places (outside image overlap)
+            valid_mask = ~np.isnan(vx_slice)
+
+            if not np.any(valid_mask):
+                continue
+
+            x_valid = X_flat[valid_mask]
+            y_valid = Y_flat[valid_mask]
+            vx_valid = vx_slice[valid_mask]
+            vy_valid = vy_slice[valid_mask]
+            mad_valid = mad_slice[valid_mask] if mad_slice is not None else None
+
+            if invert_y:
+                vy_valid = -vy_valid
+
+            # Compute Derived Fields based on mode
+            if mode == "velocity":
+                # Data is velocity (px/d). Compute displacement.
+                # If dt is very small, this might be unstable, but dt usually >= 1 day
+                u_vel = vx_valid
+                v_vel = vy_valid
+                dx = u_vel * dt_days_val
+                dy = v_vel * dt_days_val
+            else:
+                # Data is displacement (px). Compute velocity.
+                dx = vx_valid
+                dy = vy_valid
+                if dt_days_val != 0:
+                    scale = 1.0 / dt_days_val
+                    u_vel = dx * scale
+                    v_vel = dy * scale
+                else:
+                    u_vel = dx
+                    v_vel = dy
+
+            disp_mag = np.hypot(dx, dy)
+            V_vel = np.hypot(u_vel, v_vel)
+
+            # --- Store Record ---
+            meta = {
+                "initial_date": initial_date_,
+                "final_date": final_date_,
+                "reference_date": final_date_,
+                "dt_hours": int(dt_hours),
+                "dt_days": int(dt_days_val),
+            }
+
+            payload = {
+                "x": x_valid,
+                "y": y_valid,
+                "dx": dx.astype(np.float32),
+                "dy": dy.astype(np.float32),
+                "disp_mag": disp_mag.astype(np.float32),
+                "u": u_vel.astype(np.float32),
+                "v": v_vel.astype(np.float32),
+                "V": V_vel.astype(np.float32),
+                "ensemble_mad": mad_valid.astype(np.float32)
+                if mad_valid is not None
+                else None,
+                "dt_hours": int(dt_hours),
+                "dt_days": int(dt_days_val),
+                "initial_date": initial_date_.strftime("%Y-%m-%d"),
+                "final_date": final_date_.strftime("%Y-%m-%d"),
+                "reference_date": final_date_.strftime("%Y-%m-%d"),
+            }
+
+            cache.store_dic_record(meta=meta, payload=payload)
+            processed_count += 1
+            if progress_callback:
+                progress_callback(processed_count, num_steps)
+
+    logger.info(f"Loaded {processed_count} records from NetCDF cube.")
+    return processed_count
+
+
 def _load_data_to_cache(
     *,
     data_dir: str | Path,
-    file_search_pattern: str = "*.txt",
+    file_search_pattern: str = "*.nc",
     filename_date_template: str | None,
     filename_pattern: str | None = None,
     date_format: str | None = None,
@@ -760,9 +973,52 @@ def _load_data_to_cache(
     data_path = Path(data_dir)
     files = sorted(data_path.glob(file_search_pattern))
 
+    if not files:
+        logger.warning("No files found.")
+        return 0
+
+    # Check for NetCDF cubes explicitly first
+    nc_files = sorted(data_path.glob("*.nc"))
+    loaded_count = 0
+    if nc_files:
+        logger.info(f"Found {len(nc_files)} NetCDF cube(s). Using NetCDF only.")
+        loaded_count = 0
+        for f in nc_files:
+            try:
+                n = _load_netcdf_cube_into_cache(
+                    file_path=f,
+                    cache=cache,
+                    invert_y=invert_y,
+                    dt_days_filter=dt_days,
+                    dt_hours_tolerance=dt_hours_tolerance,
+                    reference_date_start=reference_date_start,
+                    reference_date_end=reference_date_end,
+                    progress_callback=progress_callback,
+                )
+                if n:
+                    loaded_count += n
+                else:
+                    logger.info(f"No records loaded from NetCDF cube {f.name}.")
+            except Exception as e:
+                logger.error(f"Failed to load NetCDF cube {f.name}: {e}")
+
+        return loaded_count
+
+    # If no NC files, search for standard files using the provided pattern
+    files = sorted(data_path.glob(file_search_pattern))
+
+    # Filter out .nc files from this list just in case pattern matches them (e.g. *.*)
+    standard_files = [f for f in files if f.suffix != ".nc"]
+
+    if not standard_files:
+        logger.warning(f"No files found matching {file_search_pattern} in {data_path}")
+        return 0
+    logger.info(f"Found {len(standard_files)} DIC files.")
+
+
     # Pre-filter files by parsing filenames and applying date / dt filters
     candidates: list[tuple[Path, datetime, datetime, int, int]] = []
-    for f in files:
+    for f in standard_files:
         try:
             final_date, initial_date = _parse_filename(
                 f,

@@ -9,8 +9,8 @@ from fastapi.templating import Jinja2Templates
 
 from .cache import AppState, cache
 from .config import get_logger, get_settings, reload_settings
+from .dataloaders import get_data_provider
 from .endpoints import router as api_router
-from .services import get_data_provider
 
 logger = get_logger()
 app_state = AppState()
