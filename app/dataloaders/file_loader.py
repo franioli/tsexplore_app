@@ -817,131 +817,168 @@ def _load_netcdf_cube_into_cache(
         dates2 = ds["date2"].values
         dts_days = ds["dt_days"].values
 
+        # Access variables directly to avoid repeated lookup overhead
+        vx_var = ds["vx"]
+        vy_var = ds["vy"]
+        mad_var = ds["mad"] if "mad" in ds else None
+
         processed_count = 0
 
-        for i in tqdm(range(num_steps), desc="Reading NetCDF cube", unit="slice"):
-            # Extract metadata
-            # Convert datetime64[ns] to datetime object
-            date1_np = dates1[i]
-            date2_np = dates2[i]
+        # Optimization: Read in chunks instead of one by one
+        # This reduces disk seeks and xarray overhead significantly
+        chunk_size = 50
 
-            # Safe conversion
-            ts_start = (
-                date1_np - np.datetime64("1970-01-01T00:00:00Z")
-            ) / np.timedelta64(1, "s")
-            ts_end = (
-                date2_np - np.datetime64("1970-01-01T00:00:00Z")
-            ) / np.timedelta64(1, "s")
-            initial_date_ = datetime.utcfromtimestamp(ts_start)
-            final_date_ = datetime.utcfromtimestamp(ts_end)
+        for start_idx in tqdm(
+            range(0, num_steps, chunk_size), desc="Reading NetCDF cube", unit="blk"
+        ):
+            end_idx = min(start_idx + chunk_size, num_steps)
+            time_slice = slice(start_idx, end_idx)
 
-            # --- Filters ---
-            if (
-                reference_date_start
-                and final_date_.date() < reference_date_start.date()
-            ):
-                continue
-            if reference_date_end and final_date_.date() > reference_date_end.date():
-                continue
+            # 1. Bulk read data for this time chunk -> (N_chunk, Y, X)
+            vx_chunk = vx_var.isel(mid_date=time_slice).values
+            vy_chunk = vy_var.isel(mid_date=time_slice).values
+            if mad_var is not None:
+                mad_chunk = mad_var.isel(mid_date=time_slice).values
+            else:
+                mad_chunk = None
 
-            dt_days_val = float(dts_days[i])
-            dt_hours = dt_days_val * 24.0
+            # Get metadata for chunk
+            dates1_chunk = dates1[time_slice]
+            dates2_chunk = dates2[time_slice]
+            dts_days_chunk = dts_days[time_slice]
 
-            if dt_days_filter is not None:
-                filter_list = (
-                    tuple(dt_days_filter)
-                    if isinstance(dt_days_filter, list)
-                    else (int(dt_days_filter),)
-                )
-                matched = False
-                for ft in filter_list:
-                    target_hours = ft * 24.0
-                    if abs(dt_hours - target_hours) <= dt_hours_tolerance:
-                        matched = True
-                        break
-                if not matched:
+            # 2. Iterate strictly in-memory over the chunk
+            n_in_chunk = end_idx - start_idx
+
+            for k in range(n_in_chunk):
+                # Extract metadata
+                # Convert datetime64[ns] to datetime object
+                date1_np = dates1_chunk[k]
+                date2_np = dates2_chunk[k]
+
+                if np.isnat(date1_np) or np.isnat(date2_np):
                     continue
 
-            # --- Extract Data Slice ---
-            # Slice the i-th step. .values loads it.
-            # Variables are likely (mid_date, y, x)
-            vx_slice = ds["vx"].isel(mid_date=i).values.ravel()
-            vy_slice = ds["vy"].isel(mid_date=i).values.ravel()
+                # Safe conversion
+                ts_start = (
+                    date1_np - np.datetime64("1970-01-01T00:00:00Z")
+                ) / np.timedelta64(1, "s")
+                ts_end = (
+                    date2_np - np.datetime64("1970-01-01T00:00:00Z")
+                ) / np.timedelta64(1, "s")
+                initial_date_ = datetime.utcfromtimestamp(ts_start)
+                final_date_ = datetime.utcfromtimestamp(ts_end)
 
-            if "mad" in ds:
-                mad_slice = ds["mad"].isel(mid_date=i).values.ravel()
-            else:
-                mad_slice = np.full_like(vx_slice, np.nan)
+                # --- Filters ---
+                if (
+                    reference_date_start
+                    and final_date_.date() < reference_date_start.date()
+                ):
+                    continue
+                if (
+                    reference_date_end
+                    and final_date_.date() > reference_date_end.date()
+                ):
+                    continue
 
-            # Filter NaNs (valid mask)
-            # We assume vx and vy have NaNs in the same places (outside image overlap)
-            valid_mask = ~np.isnan(vx_slice)
+                dt_days_val = float(dts_days_chunk[k])
+                dt_hours = dt_days_val * 24.0
 
-            if not np.any(valid_mask):
-                continue
+                if dt_days_filter is not None:
+                    filter_list = (
+                        tuple(dt_days_filter)
+                        if isinstance(dt_days_filter, list)
+                        else (int(dt_days_filter),)
+                    )
+                    matched = False
+                    for ft in filter_list:
+                        target_hours = ft * 24.0
+                        if abs(dt_hours - target_hours) <= dt_hours_tolerance:
+                            matched = True
+                            break
+                    if not matched:
+                        continue
 
-            x_valid = X_flat[valid_mask]
-            y_valid = Y_flat[valid_mask]
-            vx_valid = vx_slice[valid_mask]
-            vy_valid = vy_slice[valid_mask]
-            mad_valid = mad_slice[valid_mask] if mad_slice is not None else None
+                # --- Extract Data Slice ---
+                # Flatten the k-th slice from the loaded chunk
+                vx_slice = vx_chunk[k].ravel()
+                vy_slice = vy_chunk[k].ravel()
 
-            if invert_y:
-                vy_valid = -vy_valid
-
-            # Compute Derived Fields based on mode
-            if mode == "velocity":
-                # Data is velocity (px/d). Compute displacement.
-                # If dt is very small, this might be unstable, but dt usually >= 1 day
-                u_vel = vx_valid
-                v_vel = vy_valid
-                dx = u_vel * dt_days_val
-                dy = v_vel * dt_days_val
-            else:
-                # Data is displacement (px). Compute velocity.
-                dx = vx_valid
-                dy = vy_valid
-                if dt_days_val != 0:
-                    scale = 1.0 / dt_days_val
-                    u_vel = dx * scale
-                    v_vel = dy * scale
+                if mad_chunk is not None:
+                    mad_slice = mad_chunk[k].ravel()
                 else:
-                    u_vel = dx
-                    v_vel = dy
+                    mad_slice = None
 
-            disp_mag = np.hypot(dx, dy)
-            V_vel = np.hypot(u_vel, v_vel)
+                # Filter NaNs (valid mask)
+                # We assume vx and vy have NaNs in the same places (outside image overlap)
+                valid_mask = ~np.isnan(vx_slice)
 
-            # --- Store Record ---
-            meta = {
-                "initial_date": initial_date_,
-                "final_date": final_date_,
-                "reference_date": final_date_,
-                "dt_hours": int(dt_hours),
-                "dt_days": int(dt_days_val),
-            }
+                if not np.any(valid_mask):
+                    continue
 
-            payload = {
-                "x": x_valid,
-                "y": y_valid,
-                "dx": dx.astype(np.float32),
-                "dy": dy.astype(np.float32),
-                "disp_mag": disp_mag.astype(np.float32),
-                "u": u_vel.astype(np.float32),
-                "v": v_vel.astype(np.float32),
-                "V": V_vel.astype(np.float32),
-                "ensemble_mad": mad_valid.astype(np.float32)
-                if mad_valid is not None
-                else None,
-                "dt_hours": int(dt_hours),
-                "dt_days": int(dt_days_val),
-                "initial_date": initial_date_.strftime("%Y-%m-%d"),
-                "final_date": final_date_.strftime("%Y-%m-%d"),
-                "reference_date": final_date_.strftime("%Y-%m-%d"),
-            }
+                x_valid = X_flat[valid_mask]
+                y_valid = Y_flat[valid_mask]
+                vx_valid = vx_slice[valid_mask]
+                vy_valid = vy_slice[valid_mask]
+                mad_valid = mad_slice[valid_mask] if mad_slice is not None else None
 
-            cache.store_dic_record(meta=meta, payload=payload)
-            processed_count += 1
+                if invert_y:
+                    vy_valid = -vy_valid
+
+                # Compute Derived Fields based on mode
+                if mode == "velocity":
+                    # Data is velocity (px/d). Compute displacement.
+                    # If dt is very small, this might be unstable, but dt usually >= 1 day
+                    u_vel = vx_valid
+                    v_vel = vy_valid
+                    dx = u_vel * dt_days_val
+                    dy = v_vel * dt_days_val
+                else:
+                    # Data is displacement (px). Compute velocity.
+                    dx = vx_valid
+                    dy = vy_valid
+                    if dt_days_val != 0:
+                        scale = 1.0 / dt_days_val
+                        u_vel = dx * scale
+                        v_vel = dy * scale
+                    else:
+                        u_vel = dx
+                        v_vel = dy
+
+                disp_mag = np.hypot(dx, dy)
+                V_vel = np.hypot(u_vel, v_vel)
+
+                # --- Store Record ---
+                meta = {
+                    "initial_date": initial_date_,
+                    "final_date": final_date_,
+                    "reference_date": final_date_,
+                    "dt_hours": int(dt_hours),
+                    "dt_days": int(dt_days_val),
+                }
+
+                payload = {
+                    "x": x_valid.astype(np.float32),
+                    "y": y_valid.astype(np.float32),
+                    "dx": dx.astype(np.float32),
+                    "dy": dy.astype(np.float32),
+                    "disp_mag": disp_mag.astype(np.float32),
+                    "u": u_vel.astype(np.float32),
+                    "v": v_vel.astype(np.float32),
+                    "V": V_vel.astype(np.float32),
+                    "ensemble_mad": mad_valid.astype(np.float32)
+                    if mad_valid is not None
+                    else None,
+                    "dt_hours": int(dt_hours),
+                    "dt_days": int(dt_days_val),
+                    "initial_date": initial_date_.strftime("%Y-%m-%d"),
+                    "final_date": final_date_.strftime("%Y-%m-%d"),
+                    "reference_date": final_date_.strftime("%Y-%m-%d"),
+                }
+
+                cache.store_dic_record(meta=meta, payload=payload)
+                processed_count += 1
+
             if progress_callback:
                 progress_callback(processed_count, num_steps)
 
